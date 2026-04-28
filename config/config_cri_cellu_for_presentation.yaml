@@ -1,0 +1,86 @@
+samples:
+  chironomus-test:
+    path: "/home/andu/projects/Yolk/data/Chironomus/test"
+    manual:
+      px2micron: 0.2738095
+      delta: 2
+      movie_time_interval_sec: 120
+    time_window:
+      start_min: null
+      end_min: null
+    visualization:
+      basal_smooth_window: 5
+      kymo_marked_start_pct: 70
+    spline:
+      smoothing: 0.0
+      degree: 3
+    preprocessing:
+      keep_every: 1
+  drosophila-1:
+    path: "/home/andu/projects/Yolk/data/Drosophila/1"
+    manual:
+      px2micron: 0.2738095
+      delta: 2
+      movie_time_interval_sec: 10
+    time_window:
+      start_min: null
+      end_min: null
+    visualization:
+      basal_smooth_window: 5
+      kymo_marked_start_pct: 70
+    spline:
+      smoothing: 0.0
+      degree: 3
+    preprocessing:
+      keep_every: 1
+  nasonia-1:
+    path: "/home/andu/projects/Yolk/data/Nasonia/1"
+    manual:
+      px2micron: 0.2738096
+      delta: 2
+      movie_time_interval_sec: 120
+    time_window:
+      start_min: null
+      end_min: null
+    visualization:
+      basal_smooth_window: 5
+      kymo_marked_start_pct: 70
+    spline:
+      smoothing: 0.0
+      degree: 3
+    preprocessing:
+      keep_every: 1
+  clogmia-wt-dorsal-3:
+    path: "/home/andu/projects/Yolk/data/Clogmia/wt/dorsal/3"
+    manual:
+      px2micron: 0.2738095
+      delta: 2
+      movie_time_interval_sec: 10
+    time_window:
+      start_min: null
+      end_min: null
+    visualization:
+      basal_smooth_window: 5
+      kymo_marked_start_pct: 70
+    spline:
+      smoothing: 0.0
+      degree: 3
+    preprocessing:
+      keep_every: 3
+  hermetia-wt-celluproject-1:
+    path: "/home/andu/projects/Yolk/data/Hermetia/cellu_project/1"
+    manual:
+      px2micron: 0.2738096
+      delta: 2
+      movie_time_interval_sec: 240
+    time_window:
+      start_min: null
+      end_min: null
+    visualization:
+      basal_smooth_window: 5
+      kymo_marked_start_pct: 70
+    spline:
+      smoothing: 0.0
+      degree: 3
+    preprocessing:
+      keep_every: 1

@@ -1,0 +1,131 @@
+samples:
+  wt-dorsal-1:
+    path: data/Hermetia/wt/dorsal/1
+    manual:
+      px2micron: 0.2738095
+      movie_time_interval_sec: 40
+  wt-dorsal-2:
+    path: data/Hermetia/wt/dorsal/2
+    manual:
+      px2micron: 0.2738095
+      movie_time_interval_sec: 40
+  wt-dorsal-3:
+    path: data/Hermetia/wt/dorsal/3
+    manual:
+      px2micron: 0.2738095
+      movie_time_interval_sec: 40
+  wt-dorsal-4:
+    path: data/Hermetia/wt/dorsal/4
+    manual:
+      px2micron: 0.2738095
+      movie_time_interval_sec: 40
+  wt-dorsal-5:
+    path: data/Hermetia/wt/dorsal/5
+    manual:
+      px2micron: 0.2738095
+      movie_time_interval_sec: 40
+  wt-dorsal-6:
+    path: data/Hermetia/wt/dorsal/6
+    manual:
+      px2micron: 0.2738095
+      movie_time_interval_sec: 40
+  wt-dorsal-7:
+    path: data/Hermetia/wt/dorsal/7
+    manual:
+      px2micron: 0.2738095
+      movie_time_interval_sec: 40
+  wt-ventral-1:
+    path: data/Hermetia/wt/ventral/1
+    manual:
+      px2micron: 0.2738095
+  wt-ventral-2:
+    path: data/Hermetia/wt/ventral/2
+    manual:
+      px2micron: 0.2738095
+  wt-ventral-3:
+    path: data/Hermetia/wt/ventral/3
+    manual:
+      px2micron: 0.2738095
+  wt-ventral-4:
+    path: data/Hermetia/wt/ventral/4
+    manual:
+      px2micron: 0.2738095
+  wt-ventral-5:
+    path: data/Hermetia/wt/ventral/5
+    manual:
+      px2micron: 0.2738095
+#   wt-lateral-1:
+#     path: data/Hermetia/wt/lateral/1
+#     manual:
+#       px2micron: 0.2738095
+#   wt-lateral-2:
+#     path: data/Hermetia/wt/lateral/2
+#     manual:
+#       px2micron: 0.2738095
+#   wt-lateral-3:
+#     path: data/Hermetia/wt/lateral/3
+#     manual:
+#       px2micron: 0.2738095
+
+
+# ## Centrifugation
+
+#   centrifugation-dorsal-1:
+#     path: data/Hermetia/centrifugation/dorsal/1
+#     manual:
+#       px2micron: 0.2738095
+#   centrifugation-dorsal-2:
+#     path: data/Hermetia/centrifugation/dorsal/2
+#     manual:
+#       px2micron: 0.2738095
+#   centrifugation-dorsal-3:
+#     path: data/Hermetia/centrifugation/dorsal/3
+#     manual:
+#       px2micron: 0.2738095
+#   centrifugation-dorsal-4:
+#     path: data/Hermetia/centrifugation/dorsal/4
+#     manual:
+#       px2micron: 0.2738095
+#   centrifugation-dorsal-5:
+#     path: data/Hermetia/centrifugation/dorsal/5
+#     manual:
+#       px2micron: 0.2738095
+#   centrifugation-dorsal-6:
+#     path: data/Hermetia/centrifugation/dorsal/6
+#     manual:
+#       px2micron: 0.2738095
+#   centrifugation-ventral-lateral-1:
+#     path: data/Hermetia/centrifugation/ventral-lateral/1
+#     manual:
+#       px2micron: 0.2738095
+#   centrifugation-ventral-lateral-2:
+#     path: data/Hermetia/centrifugation/ventral-lateral/2
+#     manual:
+#       px2micron: 0.2738095
+#   centrifugation-ventral-lateral-3:
+#     path: data/Hermetia/centrifugation/ventral-lateral/3
+#     manual:
+#       px2micron: 0.2738095
+#   centrifugation-ventral-lateral-4:
+#     path: data/Hermetia/centrifugation/ventral-lateral/4
+#     manual:
+#       px2micron: 0.2738095
+#   centrifugation-ventral-lateral-5-lateral:
+#     path: data/Hermetia/centrifugation/ventral-lateral/5-lateral
+#     manual:
+#       px2micron: 0.2738095
+
+# ## Suction
+
+#   suction-dorsal-1:
+#     path: data/Hermetia/suction/dorsal/1
+#     manual:
+#       px2micron: 0.2738095
+#   suction-dorsal-2:
+#     path: data/Hermetia/suction/dorsal/2
+#     manual:
+#       px2micron: 0.2738095
+#   suction-dorsal-3:
+#     path: data/Hermetia/suction/dorsal/3
+#     manual:
+#       px2micron: 0.2738095
