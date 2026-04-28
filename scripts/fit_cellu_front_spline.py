@@ -92,37 +92,26 @@ def fit_and_save(folder: str, smoothing: float = 0.0, degree: int = 3, time_inte
     if not os.path.isfile(tsv_path):
         raise FileNotFoundError(f"VerticalKymoCelluSelection.tsv not found in: {track_folder}")
 
-    # Load px2micron and apical height from config.yaml (in the folder)
+    # Load px2micron from config.yaml
     config_path = os.path.join(folder, 'config.yaml')
     px2micron = load_px2micron_from_config(config_path)
-    
-    # Load apical height from config
-    try:
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-            if config and 'apical_detection' in config and 'apical_height_microns' in config['apical_detection']:
-                avg_height_microns = float(config['apical_detection']['apical_height_microns'])
-                print(f"Loaded apical height from config: {avg_height_microns:.2f} microns")
-            else:
-                # Fallback: try to get from pixels if microns not available
-                if config and 'apical_detection' in config and 'apical_height_px' in config['apical_detection']:
-                    avg_height_px = float(config['apical_detection']['apical_height_px'])
-                    avg_height_microns = avg_height_px * px2micron
-                    print(f"Loaded apical height from config (converted from pixels): {avg_height_microns:.2f} microns")
-                else:
-                    raise ValueError("apical_height not found in config.yaml")
-    except Exception as e:
-        raise ValueError(f"Error reading apical height from config.yaml: {e}")
 
     print(f"Loading cellularization front data from: {tsv_path}")
     data = np.loadtxt(tsv_path, delimiter="\t", skiprows=1)
     time_min = data[:, 0]      # Time is already in minutes (from annotation/averaging)
-    cellu_front = data[:, 1]    # front depth in pixels
+    cellu_front = data[:, 1]    # front depth in straightened-kymograph pixels
 
-    print(f"Loaded {len(time_min)} points")
-    print(f"Time range: {time_min.min():.2f} to {time_min.max():.2f} minutes")
-
-    # Time is already in minutes, no conversion needed
+    # Load ref_row from straighten_metadata (the apical reference row in straightened space).
+    meta_path = os.path.join(track_folder, "straighten_metadata.yaml")
+    if not os.path.exists(meta_path):
+        raise FileNotFoundError(
+            f"straighten_metadata.yaml not found in: {track_folder}. "
+            "Run straighten_kymograph before fit_cellu_front_spline."
+        )
+    with open(meta_path) as f:
+        meta = yaml.safe_load(f) or {}
+    ref_row = int(meta["ref_row"])
+    print(f"Loaded ref_row from straighten_metadata: {ref_row} px")
 
     # Sort by time to ensure strictly increasing order (required for s=0)
     sort_indices = np.argsort(time_min)
@@ -152,15 +141,13 @@ def fit_and_save(folder: str, smoothing: float = 0.0, degree: int = 3, time_inte
     
     # Find maximum depth from spline
     max_depth_px = np.max(y_fit)
-    max_depth_microns = max_depth_px * px2micron
-    max_depth_shifted = max_depth_microns - avg_height_microns
-    print(f"Maximum depth from spline: {max_depth_microns:.2f} microns (relative to apical: {max_depth_shifted:.2f} microns)")
+    max_depth_um = (max_depth_px - ref_row) * px2micron
+    print(f"Maximum depth from spline: {max_depth_um:.2f} µm below apical")
 
-    # Save spline data to TSV file (Time in minutes, CelluFront_spline in pixels, CellHeight in microns)
+    # Save spline data to TSV file (Time in minutes, CelluFront_spline in straight px, CellHeight in microns)
     spline_tsv_path = os.path.join(track_folder, "VerticalKymoCelluSelection_spline.tsv")
-    # Calculate cell height in microns (cellularization front - apical height)
-    y_fit_microns = y_fit * px2micron
-    cell_height_microns = y_fit_microns - avg_height_microns
+    # Cell height = depth in straightened kymograph relative to apical (ref_row)
+    cell_height_microns = (y_fit - ref_row) * px2micron
     spline_data = np.column_stack([t_fit, y_fit, cell_height_microns])
     np.savetxt(spline_tsv_path, spline_data, delimiter="\t", 
                header="Time\tCelluFront_spline\tCellHeight_microns", 

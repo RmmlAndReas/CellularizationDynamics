@@ -1,0 +1,8 @@
+samples:
+  drosophila_1:
+    path: "data/Drosophila/1"
+    px2micron: 0.2738095
+    movie_time_interval_sec: 10
+    keep_every: 3
+    smoothing: 0.0
+    degree: 1

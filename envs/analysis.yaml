@@ -1,7 +1,8 @@
-name: yolk
+name: celludynamics
 channels:
   - conda-forge
   - defaults
+  - bioconda
 dependencies:
   - python=3.9
   - numpy
@@ -11,7 +12,4 @@ dependencies:
   - pillow
   - pyyaml
   - pip
-  - pip:
-    - snakemake
-    - "pulp<2.8.0"  # Pin pulp to avoid compatibility issue with snakemake
-    - pyimagej  # Required for ImageJ integration in annotate_cellu_front.py
+  - snakemake

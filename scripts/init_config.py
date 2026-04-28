@@ -78,8 +78,6 @@ def _validate_required_config(config_dict, sample_path):
         missing.append("manual.px2micron")
     if "movie_time_interval_sec" not in manual:
         missing.append("manual.movie_time_interval_sec")
-    if "delta" not in manual and "delta1" not in manual:
-        missing.append("manual.delta (or manual.delta1)")
 
     preprocessing = config_dict.get("preprocessing", {})
     if "keep_every" not in preprocessing:
@@ -103,6 +101,49 @@ def _validate_required_config(config_dict, sample_path):
         )
 
 
+def _normalize_minimal_sample_config(sample_config):
+    """
+    Accept either:
+      - legacy nested schema (manual/preprocessing/spline/kymograph), or
+      - minimal flat schema and convert to nested runtime config.
+
+    Minimal flat keys:
+      px2micron, movie_time_interval_sec, keep_every, smoothing, degree
+    """
+    if not isinstance(sample_config, dict):
+        return sample_config
+
+    has_nested = any(
+        k in sample_config for k in ("manual", "preprocessing", "spline", "kymograph")
+    )
+    if has_nested:
+        return sample_config
+
+    required_flat = ["px2micron", "movie_time_interval_sec", "keep_every"]
+    missing_flat = [k for k in required_flat if k not in sample_config]
+    if missing_flat:
+        raise ValueError(
+            "Missing required minimal config fields: "
+            + ", ".join(missing_flat)
+            + ". Expected flat keys: px2micron, movie_time_interval_sec, keep_every "
+            "(optional: smoothing, degree)."
+        )
+
+    return {
+        "manual": {
+            "px2micron": float(sample_config["px2micron"]),
+            "movie_time_interval_sec": float(sample_config["movie_time_interval_sec"]),
+        },
+        "preprocessing": {
+            "keep_every": int(sample_config["keep_every"]),
+        },
+        "spline": {
+            "smoothing": float(sample_config.get("smoothing", 0.0)),
+            "degree": int(sample_config.get("degree", 3)),
+        },
+    }
+
+
 def init_sample_config(data_dir, work_dir, samples_config):
     """
     Initialize or update a sample's config.yaml from sample config.
@@ -120,8 +161,11 @@ def init_sample_config(data_dir, work_dir, samples_config):
     sample_config = None
     sample_name = None
     
+    data_dir_abs = os.path.abspath(data_dir)
     for name, sample_data in samples_config.get('samples', {}).items():
-        if sample_data.get('path') == data_dir:
+        sample_path = sample_data.get("path")
+        sample_path_abs = os.path.abspath(sample_path) if sample_path is not None else None
+        if sample_path_abs == data_dir_abs:
             sample_name = name
             # Get all config except 'path'
             sample_config = {k: v for k, v in sample_data.items() if k != 'path'}
@@ -130,6 +174,9 @@ def init_sample_config(data_dir, work_dir, samples_config):
     if sample_config is None:
         raise ValueError(f"Sample path '{data_dir}' not found in sample config")
     
+    # Support a minimal flat schema and normalize to nested runtime structure.
+    sample_config = _normalize_minimal_sample_config(sample_config)
+
     # Start with config from source sample config
     merged_config = sample_config.copy()
     
