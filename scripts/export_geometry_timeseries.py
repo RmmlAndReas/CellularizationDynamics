@@ -8,7 +8,7 @@ track/VerticalKymoCelluSelection_spline.tsv on the kymograph time grid.
 Output: track/geometry_timeseries.csv
 
 Columns:
-  time_min, apical_px_raw, front_minus_apical_px, front_minus_apical_um
+  col_idx, time_min, apical_px_raw, front_minus_apical_px, front_minus_apical_um
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from mask_utils import select_cytoplasm_run
 
 
 CSV_COLUMNS: List[str] = [
+    "col_idx",
     "time_min",
     "apical_px_raw",
     "front_raw_px",
@@ -110,9 +111,9 @@ def export_geometry_timeseries(folder: str) -> str:
     spline_time = sp[:, 0].astype(float)
     spline_front = sp[:, 1].astype(float)
 
-    time_min = col_idx.astype(float) * dt_min
+    time_abs_min = col_idx.astype(float) * dt_min
     front_px = np.interp(
-        time_min,
+        time_abs_min,
         spline_time,
         spline_front,
         left=np.nan,
@@ -120,6 +121,7 @@ def export_geometry_timeseries(folder: str) -> str:
     )
 
     rows: List[Dict[str, Any]] = []
+    first_valid_time_abs_min: float | None = None
     for i in range(len(col_idx)):
         fpx = float(front_px[i])
         apx = apical_px[i]
@@ -130,6 +132,11 @@ def export_geometry_timeseries(folder: str) -> str:
         if not (valid_fr and valid_apical):
             continue
 
+        t_abs_min = float(time_abs_min[i])
+        if first_valid_time_abs_min is None:
+            first_valid_time_abs_min = t_abs_min
+        t_plot_min = t_abs_min - first_valid_time_abs_min
+
         # front_minus_apical uses ref_row (the fixed apical reference from straightening),
         # so the value is identical to what was drawn and stored in straight-px space.
         fmapx = fpx - ref_row
@@ -138,7 +145,8 @@ def export_geometry_timeseries(folder: str) -> str:
 
         rows.append(
             {
-                "time_min": float(time_min[i]),
+                "col_idx": int(col_idx[i]),
+                "time_min": t_plot_min,
                 "apical_px_raw": apx,
                 "front_raw_px": front_raw,
                 "front_minus_apical_px": fmapx,

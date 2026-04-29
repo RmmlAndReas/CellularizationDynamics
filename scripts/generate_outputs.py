@@ -176,6 +176,18 @@ def _parse_csv_float(cell):
         return np.nan
 
 
+def _parse_csv_int(cell):
+    if cell is None:
+        return None
+    s = str(cell).strip()
+    if s == "":
+        return None
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
+
+
 def load_geometry_timeseries_csv(folder, dt_min_kymo):
     """
     Load track/geometry_timeseries.csv if present.
@@ -199,6 +211,7 @@ def load_geometry_timeseries_csv(folder, dt_min_kymo):
             "front_minus_apical_px",
             "front_minus_apical_um",
         }
+        has_col_idx = "col_idx" in (reader.fieldnames or [])
         missing = [c for c in required_cols if c not in (reader.fieldnames or [])]
         if missing:
             raise ValueError(
@@ -220,7 +233,14 @@ def load_geometry_timeseries_csv(folder, dt_min_kymo):
     front_minus_apical_um = np.full(n, np.nan)
     for i, row in enumerate(rows):
         time_min[i] = _parse_csv_float(row.get("time_min"))
-        col_idx[i] = int(np.rint(time_min[i] / dt_min_kymo)) if dt_min_kymo > 0 else i
+        if has_col_idx:
+            parsed_col_idx = _parse_csv_int(row.get("col_idx"))
+            if parsed_col_idx is not None:
+                col_idx[i] = parsed_col_idx
+            else:
+                col_idx[i] = int(np.rint(time_min[i] / dt_min_kymo)) if dt_min_kymo > 0 else i
+        else:
+            col_idx[i] = int(np.rint(time_min[i] / dt_min_kymo)) if dt_min_kymo > 0 else i
         apical_px[i] = _parse_csv_float(row.get("apical_px_raw"))
         front_raw_px[i] = _parse_csv_float(row.get("front_raw_px"))
         front_minus_apical_um[i] = _parse_csv_float(row.get("front_minus_apical_um"))
@@ -443,8 +463,9 @@ def _prepare_cellularization_data(folder, cfg, spline_time_min, spline_front_px)
     basal_um = np.full(num_timepoints_cyto, np.nan, dtype=float)
     front_um = front_minus_apical_um.astype(float)
 
-    # Kymograph columns to display: map time_min_cyto back to column indices.
-    col_indices = np.round(time_min_cyto / dt_min_kymo).astype(int)
+    # Kymograph columns to display: use explicit indices from geometry CSV.
+    # This keeps exact alignment even when time_min is re-zeroed for plotting.
+    col_indices = gs["col_idx"].astype(int)
     col_indices = np.clip(col_indices, 0, num_timepoints - 1)
     straight_kymo_plot = straight_kymo[crop_top:, col_indices]
 
@@ -495,9 +516,9 @@ def _draw_cellularization_on_ax(ax, d):
     ax.axhline(
         y=0.0,
         linestyle="--",
-        color="0.5",
+        color="#FFD700",
         linewidth=3.0,
-        alpha=0.5,
+        alpha=0.8,
     )
 
     valid_basal_um = ~np.isnan(d["basal_um_plot"])
