@@ -51,6 +51,7 @@ FONT_SIZE_TICKS = 23
 SPINE_LINEWIDTH = 3
 TICK_MAJOR_LENGTH = 8
 TICK_MAJOR_WIDTH = 3
+APICAL_HEADROOM_UM = 2.0
 
 def _auto_brightness_contrast_limits(image, saturated_pct=0.35):
     """
@@ -490,10 +491,13 @@ def _draw_cellularization_on_ax(ax, d):
         vmax=d["vmax"],
     )
 
-    ax.plot(
-        time_min_cyto[d["valid_apical"]],
-        d["apical_um"][d["valid_apical"]],
-        linestyle="--", color="0.25", linewidth=3.0, alpha=0.9,
+    # Explicit apical reference: y = 0 µm by definition.
+    ax.axhline(
+        y=0.0,
+        linestyle="--",
+        color="0.5",
+        linewidth=3.0,
+        alpha=0.5,
     )
 
     valid_basal_um = ~np.isnan(d["basal_um_plot"])
@@ -522,6 +526,19 @@ def _draw_cellularization_on_ax(ax, d):
     t0, t100 = time_min_cyto[0], time_min_cyto[-1]
 
     ax.set_xlim(t0, t100)
+    # Keep image mapping unchanged; show fixed headroom of -2 µm above apical.
+    apical_headroom_um = -APICAL_HEADROOM_UM
+    top_visible = min(apical_headroom_um, y_top_um)
+    ax.set_ylim(y_bottom_um, top_visible)
+    ax.set_facecolor("white")
+
+    # Keep negative space visible but don't label negative tick values.
+    tick_step = 5.0
+    tick_start = 0.0
+    tick_end = np.ceil(y_bottom_um / tick_step) * tick_step
+    ticks = list(np.arange(tick_start, tick_end + 0.1, tick_step))
+    ticks = sorted(set(round(t, 6) for t in ticks))
+    ax.set_yticks(ticks)
     ax.set_xlabel("Time (min)", fontsize=FONT_SIZE_LABEL)
     ax.set_ylabel("Depth (µm)", fontsize=FONT_SIZE_LABEL)
     ax.tick_params(labelsize=FONT_SIZE_TICKS, length=TICK_MAJOR_LENGTH, width=TICK_MAJOR_WIDTH)

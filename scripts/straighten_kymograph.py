@@ -65,7 +65,12 @@ def run(work_dir: str) -> None:
     if not np.any(valid):
         raise ValueError("No valid apical border detected in YolkMask.tif")
 
-    ref_row = int(np.nanmin(apical_px[valid]))
+    # Reserve ~2 µm headroom above apical.
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f) or {}
+    px2micron = float(cfg.get("manual", {}).get("px2micron", 1.0))
+    margin_px = int(round(2.0 / max(px2micron, 1e-9)))
+    ref_row = int(np.nanmin(apical_px[valid])) + margin_px
     shifts = np.zeros(num_timepoints, dtype=int)
     shifts[valid] = (ref_row - apical_px[valid]).astype(int)
 
@@ -79,10 +84,7 @@ def run(work_dir: str) -> None:
             if 0 <= new_y < depth:
                 straight_kymo[new_y, t] = kymo[y, t]
 
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f) or {}
-    px2micron = float(cfg.get("manual", {}).get("px2micron", 1.0))
-    margin_px = int(round(3.0 / px2micron))
+    margin_px = int(round(2.0 / max(px2micron, 1e-9)))
     crop_top = max(0, ref_row - margin_px)
 
     out_tif = os.path.join(track, "Kymograph_straightened.tif")
