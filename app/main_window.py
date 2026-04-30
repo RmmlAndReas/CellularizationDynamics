@@ -4,8 +4,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtGui import QAction, QDesktopServices
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -83,20 +82,20 @@ class MainWindow(QMainWindow):
         self.open_files_btn = QPushButton("Open Files")
         self.analyze_btn = QPushButton("Analyze")
         self.save_btn = QPushButton("Save")
-        self.generate_btn = QPushButton("Generate Figure")
-        self.open_btn = QPushButton("Open Output Folder")
+        self.generate_btn = QPushButton("Generate Outputs")
+        self.generate_btn.setToolTip(
+            "Run spline fitting, export geometry CSV, and regenerate result figures."
+        )
         self.status_label = QLabel("Idle")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         self.save_btn.setEnabled(False)
         self.generate_btn.setEnabled(False)
-        self.open_btn.setEnabled(False)
 
         controls.addWidget(self.open_files_btn)
         controls.addWidget(self.analyze_btn)
         controls.addWidget(self.save_btn)
         controls.addWidget(self.generate_btn)
-        controls.addWidget(self.open_btn)
         controls.addWidget(self.status_label, 1)
         root.addLayout(controls)
 
@@ -104,10 +103,6 @@ class MainWindow(QMainWindow):
         self.drop_list = DropListWidget(self.defaults_panel.values)
         self.drop_list.setMinimumHeight(140)
         root.addWidget(self.drop_list, 0)
-
-        open_action = QAction("Open Output Folder", self)
-        open_action.triggered.connect(self.open_output_folder)
-        self.menuBar().addAction(open_action)
 
         self.drop_list.file_selected.connect(self._on_file_selected)
         self.drop_list.params_changed.connect(self._on_params_changed)
@@ -118,11 +113,13 @@ class MainWindow(QMainWindow):
         self.analyze_btn.clicked.connect(self.analyze_current)
         self.save_btn.clicked.connect(self.save_current)
         self.generate_btn.clicked.connect(self.generate_figure)
-        self.open_btn.clicked.connect(self.open_output_folder)
 
         self.threshold_panel.threshold_changed.connect(self._on_threshold_changed)
         self.threshold_panel.brightness_changed.connect(self._on_brightness_changed)
+        self.threshold_panel.island_mode_changed.connect(self._on_island_mode_changed)
+        self.threshold_panel.island_clicked.connect(self._on_island_clicked)
         self.front_panel.raw_point_added.connect(self._on_raw_point_added)
+        self.front_panel.raw_point_moved.connect(self._on_raw_point_moved)
         self.front_panel.undo_requested.connect(self._on_undo)
         self.front_panel.clear_requested.connect(self._on_clear)
 
@@ -145,9 +142,9 @@ class MainWindow(QMainWindow):
             self.samples[path] = state
         else:
             self.samples[path].acq_params = AcquisitionParams(**params)
+        self.samples[path].set_use_island_mode(self.threshold_panel.is_island_mode_enabled())
         self._refresh_panels()
         self._refresh_output_preview()
-        self.open_btn.setEnabled(True)
 
     def open_files_dialog(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -187,7 +184,6 @@ class MainWindow(QMainWindow):
             self.current_path = None
             self.save_btn.setEnabled(False)
             self.generate_btn.setEnabled(False)
-            self.open_btn.setEnabled(False)
             self.status_label.setText("Idle")
 
     def _refresh_panels(self):
@@ -196,6 +192,7 @@ class MainWindow(QMainWindow):
             return
 
         self.threshold_panel.set_data(state.kymograph, state.threshold, state.mask)
+        self.threshold_panel.set_selected_island_mask(state.selected_island_mask())
 
         crop_top = max(0, state.ref_row - int(round(3.0 / max(state.acq_params.px2micron, 1e-9))))
         points_display = state.display_points(crop_top)
@@ -209,17 +206,51 @@ class MainWindow(QMainWindow):
         if state is None:
             return
         state.set_threshold(threshold)
-        self.status_label.setText("Unsaved changes")
+        if state.use_island_mode:
+            self.status_label.setText("Island mode: threshold changed, reselect islands")
+        else:
+            self.status_label.setText("Unsaved changes")
         self.generate_btn.setEnabled(False)
 
     def _on_brightness_changed(self, brightness: float):
         self.front_panel.set_brightness(brightness)
+
+    def _on_island_mode_changed(self, enabled: bool):
+        state = self._current_state()
+        if state is None:
+            return
+        state.set_use_island_mode(enabled)
+        self.generate_btn.setEnabled(False)
+        if enabled:
+            self.status_label.setText("Island mode enabled: click threshold islands")
+        else:
+            self.status_label.setText("Unsaved changes")
+
+    def _on_island_clicked(self, x: float, y: float):
+        state = self._current_state()
+        if state is None:
+            return
+        selected = state.select_island_at(x, y)
+        if selected:
+            self.status_label.setText("Unsaved changes")
+            self.generate_btn.setEnabled(False)
+        else:
+            self.status_label.setText("Island mode: selection reset (click islands to select)")
+            self.generate_btn.setEnabled(False)
 
     def _on_raw_point_added(self, x: float, y: float):
         state = self._current_state()
         if state is None:
             return
         state.add_front_point_raw(x, y)
+        self.status_label.setText("Unsaved changes")
+        self.generate_btn.setEnabled(False)
+
+    def _on_raw_point_moved(self, index: int, x: float, y: float):
+        state = self._current_state()
+        if state is None:
+            return
+        state.update_front_point_raw(index, x, y)
         self.status_label.setText("Unsaved changes")
         self.generate_btn.setEnabled(False)
 
@@ -352,7 +383,7 @@ class MainWindow(QMainWindow):
         self._figure_worker.start()
 
     def _on_figure_done(self):
-        self.status_label.setText("Figure ready")
+        self.status_label.setText("Outputs ready")
         self._refresh_output_preview()
 
     def _refresh_output_preview(self):
@@ -362,8 +393,3 @@ class MainWindow(QMainWindow):
         png_path = state.work_dir / "results" / "Cellularization.png"
         self.result_panel.show_png(png_path)
 
-    def open_output_folder(self):
-        state = self._current_state()
-        if state is None:
-            return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(state.work_dir)))

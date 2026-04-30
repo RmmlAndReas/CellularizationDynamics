@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from scipy import ndimage
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from .pipeline_adapter import select_cytoplasm_run
@@ -31,10 +32,13 @@ class SampleState(QObject):
         self.kymograph: np.ndarray | None = None
         self.threshold: float | None = None
         self.mask: np.ndarray | None = None
+        self.labels: np.ndarray | None = None
         self.ref_row: int = 0
         self.shifts: np.ndarray | None = None
         self.straight_kymo: np.ndarray | None = None
         self.front_points_raw: list[tuple[float, float]] = []
+        self.use_island_mode: bool = False
+        self.selected_island_labels: set[int] = set()
         self.dirty: bool = False
 
     def set_kymograph(self, kymo: np.ndarray) -> None:
@@ -44,20 +48,57 @@ class SampleState(QObject):
 
     def set_threshold(self, threshold: float) -> None:
         self.threshold = float(threshold)
+        self.selected_island_labels.clear()
         self.recompute_from_threshold()
+
+    def set_use_island_mode(self, use_island_mode: bool) -> None:
+        self.use_island_mode = bool(use_island_mode)
+        if not self.use_island_mode:
+            self.selected_island_labels.clear()
+        self.recompute_from_threshold()
+
+    def select_island_at(self, x: float, y: float) -> bool:
+        if self.labels is None:
+            return False
+        row = int(np.clip(np.rint(y), 0, self.labels.shape[0] - 1))
+        col = int(np.clip(np.rint(x), 0, self.labels.shape[1] - 1))
+        picked_label = int(self.labels[row, col])
+        if picked_label <= 0:
+            if self.selected_island_labels:
+                self.selected_island_labels.clear()
+                self.recompute_from_threshold()
+            return False
+        self.selected_island_labels.add(picked_label)
+        self.recompute_from_threshold()
+        return True
+
+    def selected_island_mask(self) -> np.ndarray | None:
+        if self.labels is None or not self.selected_island_labels:
+            return None
+        return np.isin(self.labels, list(self.selected_island_labels))
 
     def recompute_from_threshold(self) -> None:
         if self.kymograph is None or self.threshold is None:
             return
 
         self.mask = self.kymograph <= self.threshold
+        self.labels, _ = ndimage.label(self.mask.astype(np.uint8))
         depth, num_timepoints = self.mask.shape
 
         apical_px = np.full(num_timepoints, np.nan, dtype=float)
-        for t in range(num_timepoints):
-            best_start, _ = select_cytoplasm_run(self.mask[:, t], min_run_length_px=5)
-            if best_start is not None:
-                apical_px[t] = float(best_start)
+        if self.use_island_mode:
+            if self.selected_island_labels:
+                selected_labels = np.array(list(self.selected_island_labels), dtype=int)
+                for t in range(num_timepoints):
+                    col_rows = np.flatnonzero(np.isin(self.labels[:, t], selected_labels))
+                    if col_rows.size > 0:
+                        # Basal edge is the deepest pixel across selected islands.
+                        apical_px[t] = float(np.max(col_rows))
+        else:
+            for t in range(num_timepoints):
+                best_start, _ = select_cytoplasm_run(self.mask[:, t], min_run_length_px=5)
+                if best_start is not None:
+                    apical_px[t] = float(best_start)
 
         valid = ~np.isnan(apical_px)
         self.shifts = np.zeros(num_timepoints, dtype=int)
@@ -75,6 +116,13 @@ class SampleState(QObject):
 
     def add_front_point_raw(self, x: float, y: float) -> None:
         self.front_points_raw.append((x, y))
+        self.dirty = True
+        self.state_changed.emit()
+
+    def update_front_point_raw(self, index: int, x: float, y: float) -> None:
+        if index < 0 or index >= len(self.front_points_raw):
+            return
+        self.front_points_raw[index] = (float(x), float(y))
         self.dirty = True
         self.state_changed.emit()
 
