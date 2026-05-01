@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QEvent, QPoint, Qt
 from PyQt6.QtGui import QGuiApplication, QPixmap
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QSizePolicy
 
 
 class ResultPanel(QWidget):
@@ -24,7 +24,11 @@ class ResultPanel(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.scroll.setWidget(self.image_label)
-        layout.addWidget(self.scroll)
+        self.scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        layout.addWidget(self.scroll, 1)
 
         self.hint_label = QLabel("")
         self.hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)

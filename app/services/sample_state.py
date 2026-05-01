@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from scipy import ndimage
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from .pipeline_adapter import select_cytoplasm_run
+from .geometry_transform import straight_from_raw, um_from_straight
+from .pipeline_adapter import compute_apical_column_positions
 from .straighten_fast import straighten
 
 
@@ -15,7 +15,6 @@ from .straighten_fast import straighten
 class AcquisitionParams:
     px2micron: float
     movie_time_interval_sec: float
-    keep_every: int
     smoothing: float = 0.0
     degree: int = 1
 
@@ -37,13 +36,25 @@ class SampleState(QObject):
         self.shifts: np.ndarray | None = None
         self.straight_kymo: np.ndarray | None = None
         self.front_points_raw: list[tuple[float, float]] = []
-        self.use_island_mode: bool = False
+        self.use_island_mode: bool = True
         self.selected_island_labels: set[int] = set()
         self.dirty: bool = False
 
     def set_kymograph(self, kymo: np.ndarray) -> None:
         self.kymograph = kymo
         self.threshold = float(np.percentile(kymo, 50))
+        self.recompute_from_threshold()
+
+    def apply_apical_from_saved(
+        self,
+        threshold: float,
+        use_island: bool,
+        island_labels: list[int],
+    ) -> None:
+        """Restore threshold + island mode without clearing labels (unlike set_threshold)."""
+        self.use_island_mode = bool(use_island)
+        self.selected_island_labels = {int(x) for x in island_labels} if use_island else set()
+        self.threshold = float(threshold)
         self.recompute_from_threshold()
 
     def set_threshold(self, threshold: float) -> None:
@@ -82,23 +93,22 @@ class SampleState(QObject):
             return
 
         self.mask = self.kymograph <= self.threshold
-        self.labels, _ = ndimage.label(self.mask.astype(np.uint8))
         depth, num_timepoints = self.mask.shape
 
-        apical_px = np.full(num_timepoints, np.nan, dtype=float)
         if self.use_island_mode:
-            if self.selected_island_labels:
-                selected_labels = np.array(list(self.selected_island_labels), dtype=int)
-                for t in range(num_timepoints):
-                    col_rows = np.flatnonzero(np.isin(self.labels[:, t], selected_labels))
-                    if col_rows.size > 0:
-                        # Basal edge is the deepest pixel across selected islands.
-                        apical_px[t] = float(np.max(col_rows))
+            apical_px, self.labels = compute_apical_column_positions(
+                self.mask,
+                mode="island",
+                island_labels=self.selected_island_labels,
+                min_run_length_px=5,
+            )
         else:
-            for t in range(num_timepoints):
-                best_start, _ = select_cytoplasm_run(self.mask[:, t], min_run_length_px=5)
-                if best_start is not None:
-                    apical_px[t] = float(best_start)
+            apical_px, self.labels = compute_apical_column_positions(
+                self.mask,
+                mode="longest_run",
+                island_labels=None,
+                min_run_length_px=5,
+            )
 
         valid = ~np.isnan(apical_px)
         self.shifts = np.zeros(num_timepoints, dtype=int)
@@ -137,18 +147,26 @@ class SampleState(QObject):
         self.dirty = True
         self.state_changed.emit()
 
-    def display_points(self, crop_top: int) -> np.ndarray:
+    def display_points(self, ref_row: int, px2micron: float, movie_time_interval_sec: float) -> np.ndarray:
+        """Map stored points (x = col index, y = raw depth row) to plot (time min, depth µm)."""
         if not self.front_points_raw:
             return np.empty((0, 2), dtype=float)
 
         pts = np.asarray(self.front_points_raw, dtype=float)
+        dt_min = max(float(movie_time_interval_sec) / 60.0, 1e-12)
         if self.shifts is None or self.kymograph is None:
-            return pts
+            out = pts.copy()
+            out[:, 0] = out[:, 0] * dt_min
+            return out
 
+        s = max(float(px2micron), 1e-12)
         num_cols = self.kymograph.shape[1]
         display = pts.copy()
+        rr = float(ref_row)
         for i in range(display.shape[0]):
-            x = float(display[i, 0])
-            x_idx = int(np.clip(np.rint(x), 0, num_cols - 1))
-            display[i, 1] = display[i, 1] + float(self.shifts[x_idx]) - crop_top
+            x_col = float(display[i, 0])
+            x_idx = int(np.clip(np.rint(x_col), 0, num_cols - 1))
+            straight_row = straight_from_raw(display[i, 1], float(self.shifts[x_idx]))
+            display[i, 0] = x_col * dt_min
+            display[i, 1] = um_from_straight(straight_row, rr, s)
         return display

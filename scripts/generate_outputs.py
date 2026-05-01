@@ -19,6 +19,8 @@ Outputs:
           - no milestone triangle markers
     - Cellularization_trimmed_delta.tif
         Trimmed movie with white arrow on each frame at front position.
+    - Cellularization_trimmed_delta.mp4
+        Same movie as H.264 MP4 for preview in the desktop app.
 
 This script combines core logic from:
     - create_kymographs.py
@@ -90,10 +92,6 @@ def load_config(folder):
 
     movie_time_interval_sec = float(manual.get("movie_time_interval_sec", 10.0))
 
-    keep_every = None
-    if "preprocessing" in cfg and isinstance(cfg["preprocessing"], dict):
-        keep_every = int(cfg["preprocessing"].get("keep_every", 1))
-
     if "kymograph" not in cfg:
         raise ValueError("'kymograph' section not found in config.yaml")
     kymo_cfg = cfg["kymograph"]
@@ -142,7 +140,6 @@ def load_config(folder):
     return {
         "px2micron": float(manual["px2micron"]),
         "movie_time_interval_sec": movie_time_interval_sec,
-        "keep_every": keep_every,
         "kymograph_time_interval_sec": time_interval_sec,
         "apical_height_px": apical_height_px,
         "final_height_px": final_height_px,
@@ -300,7 +297,6 @@ def mark_delta_on_trimmed_movie(work_dir, cfg, spline_time_min, spline_front_px)
     """
     px2micron = cfg["px2micron"]
     movie_time_interval_sec = cfg["movie_time_interval_sec"]
-    keep_every = cfg["keep_every"] if cfg["keep_every"] is not None else 1
     dt_min_kymo = cfg["kymograph_time_interval_sec"] / 60.0
 
     trimmed_path = os.path.join(work_dir, "Cellularization_trimmed.tif")
@@ -369,7 +365,7 @@ def mark_delta_on_trimmed_movie(work_dir, cfg, spline_time_min, spline_front_px)
     arrow_size_px = max(2, int(height * 0.02))
     for f in range(num_frames):
         arrow_val = int(np.max(out_gray[f]))
-        time_min = (f * keep_every) * movie_time_interval_sec / 60.0
+        time_min = f * movie_time_interval_sec / 60.0
         if time_min < t_min_lo:
             continue
         if time_min > t_min_hi:
@@ -399,6 +395,35 @@ def mark_delta_on_trimmed_movie(work_dir, cfg, spline_time_min, spline_front_px)
     with tifffile.TiffWriter(out_path, bigtiff=False, ome=True) as tif:
         tif.write(out, metadata=metadata)
     print(f"Saved Cellularization_trimmed_delta.tif to: {out_path}")
+
+    mp4_path = os.path.join(work_dir, "results", "Cellularization_trimmed_delta.mp4")
+    fps = 1.0 / float(movie_time_interval_sec)
+    _write_delta_movie_mp4(out, mp4_path, fps)
+
+
+def _write_delta_movie_mp4(out_uint16: np.ndarray, mp4_path: str, fps: float) -> None:
+    """
+    Encode RGB uint16 stack [T, Y, X, 3] to H.264 MP4 using imageio + imageio-ffmpeg
+    (bundled ffmpeg binary; no system ffmpeg required).
+    """
+    if fps <= 0:
+        print(f"Warning: invalid fps {fps} for MP4; skipping {mp4_path}.")
+        return
+    u8 = np.clip(out_uint16.astype(np.float32) / 257.0, 0.0, 255.0).astype(np.uint8)
+    try:
+        import imageio.v3 as iio
+
+        iio.imwrite(
+            mp4_path,
+            u8,
+            fps=float(fps),
+            codec="libx264",
+            ffmpeg_params=["-pix_fmt", "yuv420p"],
+            extension=".mp4",
+        )
+        print(f"Saved Cellularization_trimmed_delta.mp4 to: {mp4_path}")
+    except Exception as exc:
+        print(f"Warning: could not write MP4 ({mp4_path}): {exc}")
 
 
 def _prepare_cellularization_data(folder, cfg, spline_time_min, spline_front_px):

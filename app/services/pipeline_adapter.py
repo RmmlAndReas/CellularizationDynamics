@@ -17,7 +17,12 @@ if _SCRIPTS_DIR not in sys.path:
 
 from scripts.trim_movie import trim_movie  # noqa: E402
 from scripts.create_vertical_kymograph import create_single_kymograph  # noqa: E402
-from scripts.mask_utils import select_cytoplasm_run  # noqa: E402
+from scripts.mask_utils import (  # noqa: E402
+    AlignmentResult,
+    build_alignment,
+    compute_apical_column_positions,
+    select_cytoplasm_run,
+)
 from scripts.cellu_front_annotation import (  # noqa: E402
     points_to_smooth_curve,
     save_tsv,

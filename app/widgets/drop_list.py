@@ -38,14 +38,7 @@ class ParamDialog(QDialog):
         self.dt.setDecimals(3)
         self.dt.setValue(float(params["movie_time_interval_sec"]))
         self.dt.setToolTip(
-            "Original movie frame interval in seconds (before keep_every downsampling)."
-        )
-
-        self.keep = QSpinBox()
-        self.keep.setRange(1, 1000)
-        self.keep.setValue(int(params["keep_every"]))
-        self.keep.setToolTip(
-            "Keep every Nth frame when building the trimmed movie and kymograph."
+            "Time between consecutive movie frames in seconds (kymograph time axis)."
         )
 
         self.smoothing = QDoubleSpinBox()
@@ -66,7 +59,6 @@ class ParamDialog(QDialog):
 
         layout.addRow("px2micron", self.px)
         layout.addRow("movie_time_interval_sec", self.dt)
-        layout.addRow("keep_every", self.keep)
         layout.addRow("smoothing", self.smoothing)
         layout.addRow("degree", self.degree)
 
@@ -79,7 +71,6 @@ class ParamDialog(QDialog):
         return {
             "px2micron": float(self.px.value()),
             "movie_time_interval_sec": float(self.dt.value()),
-            "keep_every": int(self.keep.value()),
             "smoothing": float(self.smoothing.value()),
             "degree": int(self.degree.value()),
         }

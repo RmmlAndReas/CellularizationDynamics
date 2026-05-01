@@ -22,17 +22,17 @@ class AnalyzeWorker(QThread):
     done = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, raw_movie_path: Path, work_dir: Path, keep_every: int):
+    def __init__(self, raw_movie_path: Path, work_dir: Path, sample_path: str):
         super().__init__()
         self.raw_movie_path = raw_movie_path
         self.work_dir = work_dir
-        self.keep_every = keep_every
+        self.sample_path = sample_path
 
     def run(self):
         try:
             ensure_work_tree(self.work_dir)
             self.progress.emit("Trimming movie...")
-            trim_movie(str(self.work_dir), str(self.raw_movie_path.parent), int(self.keep_every))
+            trim_movie(str(self.work_dir), str(self.raw_movie_path.parent))
 
             self.progress.emit("Building kymograph...")
             movie_path = self.work_dir / "Cellularization_trimmed.tif"

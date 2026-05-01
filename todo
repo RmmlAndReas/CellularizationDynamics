@@ -1,3 +1,9 @@
 Next: 
 
-1. I think there's a mismatch of the line in the final plot. The line is shifted slightly down compared to the real position of the curve.
+1. When I select island in apical detection mode the contrast of the kymograph changes in the right panel. Why is this?
+2. Left panel show the yaxis title with Depth (px)
+3. When enlargin the png file on click. Make it possible to close with esc button
+4. Changing position of polyline point on the kymograp is quite laggy. Why? Should be super reposinsive.
+5. I'd like to make the whole git repo GUI central. Everything else could be removed. Initially I started building GUI as extra feature. I want this to be the central of the repo.
+6. Outputs. As I removed trimming. The new .tif _trimmed doesn't make sense. Also saving the whole tif with apical detection line doesn't really make sense. The mp4 is enough. Would it be possible to remove these files to keep the output size minimal? The script can always use the original movie again. Or would this make the script slow?
+7. In the final geometry csv. I want to bring back absolue time as one col. 

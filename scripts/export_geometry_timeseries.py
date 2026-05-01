@@ -2,8 +2,8 @@
 """
 Export a unified geometry timeseries CSV per sample.
 
-Computes cytoplasm geometry directly from track/YolkMask.tif and merges it with
-track/VerticalKymoCelluSelection_spline.tsv on the kymograph time grid.
+Merges track/VerticalKymoCelluSelection_spline.tsv on the kymograph time grid with
+apical positions from straighten_metadata (same source as straightening).
 
 Output: track/geometry_timeseries.csv
 
@@ -23,9 +23,14 @@ import numpy as np
 import tifffile
 import yaml
 
-sys.path.insert(0, os.path.dirname(__file__))
-from mask_utils import select_cytoplasm_run
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
+sys.path.insert(0, os.path.dirname(__file__))
+from mask_utils import compute_apical_column_positions
+
+from app.services.geometry_transform import raw_from_straight
 
 CSV_COLUMNS: List[str] = [
     "col_idx",
@@ -37,8 +42,8 @@ CSV_COLUMNS: List[str] = [
 ]
 
 
-def _load_config(folder: str) -> Tuple[float, float, float]:
-    """Return (px2micron, ref_row, kymo_time_interval_sec)."""
+def _load_config_and_meta(folder: str) -> Tuple[float, int, float, dict]:
+    """Return (px2micron, ref_row, kymo_time_interval_sec, straighten_metadata)."""
     path = os.path.join(folder, "config.yaml")
     if not os.path.exists(path):
         raise FileNotFoundError(f"config.yaml not found: {path}")
@@ -56,7 +61,6 @@ def _load_config(folder: str) -> Tuple[float, float, float]:
         )
     )
 
-    # ref_row comes from the pre-computed straighten_metadata (single source of truth).
     meta_path = os.path.join(folder, "track", "straighten_metadata.yaml")
     if not os.path.exists(meta_path):
         raise FileNotFoundError(
@@ -67,7 +71,31 @@ def _load_config(folder: str) -> Tuple[float, float, float]:
         meta = yaml.safe_load(f) or {}
     ref_row = int(meta["ref_row"])
 
-    return px2micron, ref_row, dt_sec
+    return px2micron, ref_row, dt_sec, meta
+
+
+def _apical_px_per_column(mask_bool: np.ndarray, meta: dict) -> np.ndarray:
+    """Apical row in raw kymograph/movie space; matches straightening."""
+    num_timepoints = int(mask_bool.shape[1])
+    raw_list = meta.get("apical_px_by_col")
+    if raw_list is not None and len(raw_list) == num_timepoints:
+        return np.array(
+            [np.nan if x is None else float(x) for x in raw_list],
+            dtype=float,
+        )
+
+    mode = str(meta.get("apical_mode", "longest_run")).strip()
+    if mode not in ("longest_run", "island"):
+        mode = "longest_run"
+    il = meta.get("island_labels") or []
+    island_labels = il if mode == "island" else None
+    apical_px, _ = compute_apical_column_positions(
+        mask_bool,
+        mode=mode,  # type: ignore[arg-type]
+        island_labels=island_labels,
+        min_run_length_px=5,
+    )
+    return apical_px
 
 
 def export_geometry_timeseries(folder: str) -> str:
@@ -81,7 +109,7 @@ def export_geometry_timeseries(folder: str) -> str:
     if not os.path.exists(spline_path):
         raise FileNotFoundError(f"VerticalKymoCelluSelection_spline.tsv not found: {spline_path}")
 
-    px2micron, ref_row, kymo_dt_sec = _load_config(folder)
+    px2micron, ref_row, kymo_dt_sec, meta = _load_config_and_meta(folder)
     dt_min = kymo_dt_sec / 60.0
 
     mask = tifffile.imread(mask_path)
@@ -90,20 +118,17 @@ def export_geometry_timeseries(folder: str) -> str:
     if mask.ndim != 2:
         raise ValueError(f"YolkMask.tif has unexpected shape: {mask.shape}")
     mask_bool = mask > 0
-    depth, num_timepoints = mask_bool.shape
+    _depth, num_timepoints = mask_bool.shape
+
+    shifts = np.asarray(meta["shifts"], dtype=int)
+    if shifts.size != num_timepoints:
+        raise ValueError(
+            f"straighten_metadata shifts length {shifts.size} != mask columns {num_timepoints}"
+        )
+
+    apical_px = _apical_px_per_column(mask_bool, meta)
 
     col_idx = np.arange(num_timepoints, dtype=int)
-    apical_px = np.full(num_timepoints, np.nan, dtype=float)
-    basal_px = np.full(num_timepoints, np.nan, dtype=float)
-    min_run_length_px = 5
-
-    for t in range(num_timepoints):
-        col = mask_bool[:, t]
-        best_start, best_end = select_cytoplasm_run(col, min_run_length_px)
-        if best_start is None or best_end is None:
-            continue
-        apical_px[t] = float(best_start)
-        basal_px[t] = float(best_end)
 
     sp = np.loadtxt(spline_path, delimiter="\t", skiprows=1)
     if sp.ndim == 1:
@@ -124,11 +149,10 @@ def export_geometry_timeseries(folder: str) -> str:
     first_valid_time_abs_min: float | None = None
     for i in range(len(col_idx)):
         fpx = float(front_px[i])
-        apx = apical_px[i]
+        apx = float(apical_px[i])
         valid_apical = np.isfinite(apx) and not np.isnan(apx)
         valid_fr = np.isfinite(fpx) and not np.isnan(fpx)
 
-        # Keep only timepoints where the front is present and apical is valid.
         if not (valid_fr and valid_apical):
             continue
 
@@ -137,11 +161,9 @@ def export_geometry_timeseries(folder: str) -> str:
             first_valid_time_abs_min = t_abs_min
         t_plot_min = t_abs_min - first_valid_time_abs_min
 
-        # front_minus_apical uses ref_row (the fixed apical reference from straightening),
-        # so the value is identical to what was drawn and stored in straight-px space.
         fmapx = fpx - ref_row
         fmap_um = fmapx * px2micron
-        front_raw = apx + fmapx   # raw movie pixel row of the front
+        front_raw = raw_from_straight(fpx, float(shifts[i]))
 
         rows.append(
             {

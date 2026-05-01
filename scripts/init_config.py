@@ -68,7 +68,7 @@ def _validate_required_config(config_dict, sample_path):
     """
     missing = []
 
-    required_sections = ["manual", "kymograph", "spline", "preprocessing"]
+    required_sections = ["manual", "kymograph", "spline"]
     for section in required_sections:
         if section not in config_dict or not isinstance(config_dict.get(section), dict):
             missing.append(section)
@@ -78,10 +78,6 @@ def _validate_required_config(config_dict, sample_path):
         missing.append("manual.px2micron")
     if "movie_time_interval_sec" not in manual:
         missing.append("manual.movie_time_interval_sec")
-
-    preprocessing = config_dict.get("preprocessing", {})
-    if "keep_every" not in preprocessing:
-        missing.append("preprocessing.keep_every")
 
     kymograph = config_dict.get("kymograph", {})
     if "time_interval_sec" not in kymograph:
@@ -108,7 +104,7 @@ def _normalize_minimal_sample_config(sample_config):
       - minimal flat schema and convert to nested runtime config.
 
     Minimal flat keys:
-      px2micron, movie_time_interval_sec, keep_every, smoothing, degree
+      px2micron, movie_time_interval_sec (optional: smoothing, degree)
     """
     if not isinstance(sample_config, dict):
         return sample_config
@@ -119,13 +115,13 @@ def _normalize_minimal_sample_config(sample_config):
     if has_nested:
         return sample_config
 
-    required_flat = ["px2micron", "movie_time_interval_sec", "keep_every"]
+    required_flat = ["px2micron", "movie_time_interval_sec"]
     missing_flat = [k for k in required_flat if k not in sample_config]
     if missing_flat:
         raise ValueError(
             "Missing required minimal config fields: "
             + ", ".join(missing_flat)
-            + ". Expected flat keys: px2micron, movie_time_interval_sec, keep_every "
+            + ". Expected flat keys: px2micron, movie_time_interval_sec "
             "(optional: smoothing, degree)."
         )
 
@@ -133,9 +129,6 @@ def _normalize_minimal_sample_config(sample_config):
         "manual": {
             "px2micron": float(sample_config["px2micron"]),
             "movie_time_interval_sec": float(sample_config["movie_time_interval_sec"]),
-        },
-        "preprocessing": {
-            "keep_every": int(sample_config["keep_every"]),
         },
         "spline": {
             "smoothing": float(sample_config.get("smoothing", 0.0)),
@@ -180,30 +173,33 @@ def init_sample_config(data_dir, work_dir, samples_config):
     # Start with config from source sample config
     merged_config = sample_config.copy()
     
-    # Auto-calculate time_interval_sec from movie_time_interval_sec and keep_every
-    # Formula: time_interval_sec = movie_time_interval_sec × keep_every
-    if 'manual' in merged_config and 'preprocessing' in merged_config:
-        movie_time_interval_sec = merged_config['manual'].get('movie_time_interval_sec', 10)
-        keep_every = merged_config['preprocessing'].get('keep_every', 6)
-        
-        # Calculate kymograph time resolution
-        calculated_time_interval_sec = movie_time_interval_sec * keep_every
-        
-        # Add to kymograph section
-        if 'kymograph' not in merged_config:
-            merged_config['kymograph'] = {}
-        
-        # Only set if not already specified (allows manual override)
-        if 'time_interval_sec' not in merged_config.get('kymograph', {}):
-            merged_config['kymograph']['time_interval_sec'] = calculated_time_interval_sec
-            print(f"  Auto-calculated time_interval_sec: {calculated_time_interval_sec} sec "
-                  f"(= {movie_time_interval_sec} × {keep_every})")
+    # Auto-calculate time_interval_sec from movie frame interval (one kymograph column per frame).
+    if "manual" in merged_config:
+        movie_time_interval_sec = merged_config["manual"].get("movie_time_interval_sec", 10)
+        calculated_time_interval_sec = movie_time_interval_sec
+
+        if "kymograph" not in merged_config:
+            merged_config["kymograph"] = {}
+
+        if "time_interval_sec" not in merged_config.get("kymograph", {}):
+            merged_config["kymograph"]["time_interval_sec"] = calculated_time_interval_sec
+            print(
+                f"  Auto-calculated time_interval_sec: {calculated_time_interval_sec} sec "
+                f"(= movie_time_interval_sec)"
+            )
         else:
-            # Warn if manual value doesn't match calculated value
-            manual_value = merged_config['kymograph']['time_interval_sec']
+            manual_value = merged_config["kymograph"]["time_interval_sec"]
             if manual_value != calculated_time_interval_sec:
-                print(f"  WARNING: Manual time_interval_sec ({manual_value}) differs from "
-                      f"calculated value ({calculated_time_interval_sec} = {movie_time_interval_sec} × {keep_every})")
+                print(
+                    f"  WARNING: Manual time_interval_sec ({manual_value}) differs from "
+                    f"calculated value ({calculated_time_interval_sec} = movie_time_interval_sec)"
+                )
+
+    prep = merged_config.get("preprocessing")
+    if isinstance(prep, dict):
+        prep.pop("keep_every", None)
+        if not prep:
+            merged_config.pop("preprocessing", None)
     
     # Load existing config if it exists (to preserve pipeline-generated values)
     config_path = os.path.join(work_dir, 'config.yaml')

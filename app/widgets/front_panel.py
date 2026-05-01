@@ -6,7 +6,16 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backend_bases import MouseButton
 
 from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QSlider, QToolButton
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QSlider,
+    QSizePolicy,
+)
+
+from .figure_style import apply_window_background_to_figure
+from ..services.geometry_transform import raw_from_straight, straight_from_um
 
 
 class FrontPanel(QWidget):
@@ -18,30 +27,18 @@ class FrontPanel(QWidget):
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout(self)
-        help_row = QHBoxLayout()
-        help_row.addStretch(1)
-        self.help_button = QToolButton(self)
-        self.help_button.setText("?")
-        self.help_button.setAutoRaise(True)
-        self.help_button.setToolTip(
-            "Cellularization Front Annotation\n"
-            "- Click: add a front point.\n"
-            "- Drag point: move an existing front point.\n"
-            "- Scroll: zoom in/out horizontally around cursor.\n"
-            "- Pan slider: move the zoomed window.\n"
-            "- Backspace: undo last point.\n"
-            "- Esc: clear all points.\n"
-            "- R: reset zoom."
-        )
-        self.help_button.setToolTipDuration(20000)
-        help_row.addWidget(self.help_button)
-        layout.addLayout(help_row)
-        self.fig = Figure(figsize=(5, 4))
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.fig = Figure(figsize=(5, 4), layout="constrained")
+        apply_window_background_to_figure(self, self.fig)
         self.canvas = FigureCanvasQTAgg(self.fig)
         self.canvas.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         self.ax = self.fig.add_subplot(111)
-        self.fig.subplots_adjust(left=0.12, right=0.98, bottom=0.14, top=0.96)
-        layout.addWidget(self.canvas)
+        layout.addWidget(self.canvas, 1)
         self.footer_spacer = QWidget(self)
         self.footer_spacer.setMinimumHeight(0)
         self.footer_spacer.setMaximumHeight(0)
@@ -60,6 +57,9 @@ class FrontPanel(QWidget):
         self.points_display = np.empty((0, 2), dtype=float)
         self.shifts = None
         self.crop_top = 0
+        self.ref_row = 0
+        self.px2micron = 1.0
+        self._dt_min = 10.0 / 60.0
         self.num_cols = 0
         self.brightness = 1.0
         self.base_vmin = 0.0
@@ -80,15 +80,36 @@ class FrontPanel(QWidget):
         self._dragging_idx: int | None = None
         self._pick_radius_px = 10.0
 
-    def set_data(self, straight_kymo, points_display, shifts, crop_top):
+    def set_data(
+        self,
+        straight_kymo,
+        points_display,
+        shifts,
+        crop_top,
+        ref_row,
+        px2micron,
+        movie_time_interval_sec: float,
+    ):
         prev_num_cols = self.num_cols
         self.straight_kymo = straight_kymo
         self.points_display = points_display
         self.shifts = shifts
         self.crop_top = crop_top
+        self.ref_row = int(ref_row)
+        self.px2micron = max(float(px2micron), 1e-12)
+        new_movie_dt = float(movie_time_interval_sec)
+        prev_movie_dt = getattr(self, "_last_movie_dt_sec", None)
+        self._last_movie_dt_sec = new_movie_dt
+        self._dt_min = max(new_movie_dt / 60.0, 1e-12)
         self.num_cols = int(straight_kymo.shape[1]) if straight_kymo is not None else 0
         # Drop a stale zoom window if the data dimensions changed (new sample loaded).
         if self.num_cols != prev_num_cols:
+            self.x_zoom = None
+            self._updating_slider = True
+            self.pan_slider.setVisible(False)
+            self.pan_slider.setValue(0)
+            self._updating_slider = False
+        elif prev_movie_dt is not None and abs(new_movie_dt - prev_movie_dt) > 1e-9:
             self.x_zoom = None
             self._updating_slider = True
             self.pan_slider.setVisible(False)
@@ -110,14 +131,29 @@ class FrontPanel(QWidget):
         if self.straight_kymo is not None:
             view = self.straight_kymo[self.crop_top :, :]
             vmax = self.base_vmin + (self.base_vmax - self.base_vmin) / max(self.brightness, 1e-6)
-            self.ax.imshow(view, cmap="gray", aspect="auto", vmin=self.base_vmin, vmax=vmax)
+            h, w = view.shape
+            if h > 0 and w > 0:
+                d0 = (self.crop_top - self.ref_row) * self.px2micron
+                d1 = (self.crop_top + h - 1 - self.ref_row) * self.px2micron
+                x1 = float(max(w - 1, 0)) * self._dt_min
+                if w == 1:
+                    x1 = self._dt_min
+                self.ax.imshow(
+                    view,
+                    cmap="gray",
+                    aspect="auto",
+                    origin="upper",
+                    extent=(0.0, x1, d1, d0),
+                    vmin=self.base_vmin,
+                    vmax=vmax,
+                )
+                self.ax.axhline(0.0, color="#FFD700", linestyle="--", linewidth=1.2, alpha=0.75)
         if self.points_display.size:
             self.ax.plot(self.points_display[:, 0], self.points_display[:, 1], "r-", linewidth=2)
             self.ax.scatter(self.points_display[:, 0], self.points_display[:, 1], c="yellow", s=18)
         self.ax.set_title("Cellularization Front Annotation")
-        self.ax.set_xlabel("time")
-        self.ax.set_ylabel("depth")
-        self.fig.subplots_adjust(left=0.12, right=0.98, bottom=0.14, top=0.96)
+        self.ax.set_xlabel("Time (min)")
+        self.ax.set_ylabel("Depth relative to apical (µm)")
         # Apply persistent horizontal zoom last so it survives state-triggered redraws.
         if self.x_zoom is not None and self.num_cols > 0:
             xmin, xmax = self._clamp_zoom(self.x_zoom[0], self.x_zoom[1])
@@ -140,12 +176,12 @@ class FrontPanel(QWidget):
             self._dragging_idx = int(picked_idx)
             return
 
-        x = float(event.xdata)
-        y_display = float(event.ydata)
-        x_idx = int(np.clip(np.rint(x), 0, self.num_cols - 1))
-        y_corr = y_display + self.crop_top
-        y_raw = y_corr - float(self.shifts[x_idx])
-        self.raw_point_added.emit(x, y_raw)
+        x_min = float(event.xdata)
+        depth_um = float(event.ydata)
+        x_idx = int(np.clip(np.rint(x_min / self._dt_min), 0, self.num_cols - 1))
+        straight_row = straight_from_um(depth_um, self.ref_row, self.px2micron)
+        y_raw = raw_from_straight(straight_row, float(self.shifts[x_idx]))
+        self.raw_point_added.emit(float(x_idx), y_raw)
 
     def _on_motion(self, event):
         if self._dragging_idx is None:
@@ -174,15 +210,24 @@ class FrontPanel(QWidget):
             return None
         return idx
 
-    def _emit_moved_point(self, idx: int, x: float, y_display: float):
+    def _emit_moved_point(self, idx: int, x: float, depth_um: float):
         if self.straight_kymo is None or self.shifts is None or self.num_cols <= 0:
             return
-        x_clamped = float(np.clip(x, 0.0, float(self.num_cols - 1)))
-        visible_rows = max(1, int(self.straight_kymo.shape[0] - self.crop_top))
-        y_display_clamped = float(np.clip(y_display, 0.0, float(visible_rows - 1)))
-        x_idx = int(np.clip(np.rint(x_clamped), 0, self.num_cols - 1))
-        y_corr = y_display_clamped + self.crop_top
-        y_raw = y_corr - float(self.shifts[x_idx])
+        x_max_min = float(max(self.num_cols - 1, 0)) * self._dt_min
+        if self.num_cols == 1:
+            x_max_min = self._dt_min
+        x_clamped_min = float(np.clip(x, 0.0, x_max_min))
+        x_clamped = float(x_clamped_min / self._dt_min)
+        view_h = int(self.straight_kymo.shape[0] - self.crop_top)
+        if view_h <= 0:
+            return
+        d0 = (self.crop_top - self.ref_row) * self.px2micron
+        d1 = (self.crop_top + view_h - 1 - self.ref_row) * self.px2micron
+        d_lo, d_hi = (d0, d1) if d0 <= d1 else (d1, d0)
+        depth_clamped = float(np.clip(depth_um, d_lo, d_hi))
+        x_idx = int(np.clip(np.rint(x_clamped), 0, max(self.num_cols - 1, 0)))
+        straight_row = straight_from_um(depth_clamped, self.ref_row, self.px2micron)
+        y_raw = raw_from_straight(straight_row, float(self.shifts[x_idx]))
         self.raw_point_moved.emit(int(idx), x_clamped, y_raw)
 
     def _on_key(self, event):
@@ -201,7 +246,9 @@ class FrontPanel(QWidget):
             return
 
         full_min = 0.0
-        full_max = float(self.num_cols - 1)
+        full_max = float(max(self.num_cols - 1, 0)) * self._dt_min
+        if self.num_cols == 1:
+            full_max = self._dt_min
         cur_min, cur_max = self.x_zoom if self.x_zoom is not None else (full_min, full_max)
         cur_width = cur_max - cur_min
         if cur_width <= 0:
@@ -223,7 +270,10 @@ class FrontPanel(QWidget):
         new_max = center + right_frac * new_width
 
         new_min, new_max = self._clamp_zoom(new_min, new_max)
-        if new_min >= full_min and new_max <= full_max and (new_max - new_min) >= (full_max - full_min):
+        span = full_max - full_min
+        if span <= 0:
+            return
+        if new_min >= full_min and new_max <= full_max and (new_max - new_min) >= span:
             # Zoomed back out to full extent; clear state to keep default behavior.
             self.x_zoom = None
         else:
@@ -232,8 +282,10 @@ class FrontPanel(QWidget):
 
     def _clamp_zoom(self, xmin: float, xmax: float) -> tuple[float, float]:
         full_min = 0.0
-        full_max = float(max(self.num_cols - 1, 0))
-        min_width = min(self._min_zoom_width, max(full_max - full_min, 0.0))
+        full_max = float(max(self.num_cols - 1, 0)) * self._dt_min
+        if self.num_cols == 1:
+            full_max = self._dt_min
+        min_width = min(self._min_zoom_width * self._dt_min, max(full_max - full_min, 0.0))
         if xmax - xmin < min_width:
             center = (xmin + xmax) / 2.0
             xmin = center - min_width / 2.0
@@ -262,7 +314,9 @@ class FrontPanel(QWidget):
             self._updating_slider = False
             return
         xmin, xmax = self.x_zoom
-        full_max = float(self.num_cols - 1)
+        full_max = float(max(self.num_cols - 1, 0)) * self._dt_min
+        if self.num_cols == 1:
+            full_max = self._dt_min
         window_width = xmax - xmin
         max_shift = full_max - window_width
         if max_shift <= 0:
@@ -281,7 +335,9 @@ class FrontPanel(QWidget):
     def _on_pan_slider_changed(self, value: int):
         if self._updating_slider or self.x_zoom is None or self.num_cols <= 1:
             return
-        full_max = float(self.num_cols - 1)
+        full_max = float(max(self.num_cols - 1, 0)) * self._dt_min
+        if self.num_cols == 1:
+            full_max = self._dt_min
         xmin, xmax = self.x_zoom
         window_width = xmax - xmin
         max_shift = full_max - window_width

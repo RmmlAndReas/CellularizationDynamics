@@ -4,7 +4,15 @@ from pathlib import Path
 import yaml
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QWidget, QFormLayout, QDoubleSpinBox, QSpinBox
+from PyQt6.QtWidgets import (
+    QWidget,
+    QFormLayout,
+    QVBoxLayout,
+    QGroupBox,
+    QDoubleSpinBox,
+    QSpinBox,
+    QSizePolicy,
+)
 
 
 class DefaultsPanel(QWidget):
@@ -13,8 +21,27 @@ class DefaultsPanel(QWidget):
     def __init__(self):
         super().__init__()
         self.storage_path = Path(__file__).resolve().parents[1] / ".last_defaults.yaml"
+        # Do not grow past content height; extra space stays with the preview below.
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
 
-        layout = QFormLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(4)
+
+        self.movie_box = QGroupBox("Movie parameters")
+        movie_form = QFormLayout(self.movie_box)
+        movie_form.setSpacing(4)
+        movie_form.setContentsMargins(6, 8, 6, 6)
+        movie_form.setVerticalSpacing(4)
+        self.line_box = QGroupBox("Line postprocessing parameters")
+        line_form = QFormLayout(self.line_box)
+        line_form.setSpacing(4)
+        line_form.setContentsMargins(6, 8, 6, 6)
+        line_form.setVerticalSpacing(4)
+
         self.px2micron = QDoubleSpinBox()
         self.px2micron.setRange(0.0001, 1000.0)
         self.px2micron.setDecimals(6)
@@ -28,14 +55,7 @@ class DefaultsPanel(QWidget):
         self.movie_dt.setDecimals(3)
         self.movie_dt.setValue(10.0)
         self.movie_dt.setToolTip(
-            "Original movie frame interval in seconds (before keep_every downsampling)."
-        )
-
-        self.keep_every = QSpinBox()
-        self.keep_every.setRange(1, 1000)
-        self.keep_every.setValue(3)
-        self.keep_every.setToolTip(
-            "Keep every Nth frame when building the trimmed movie and kymograph."
+            "Time between consecutive movie frames in seconds (kymograph time axis)."
         )
 
         self.smoothing = QDoubleSpinBox()
@@ -54,28 +74,39 @@ class DefaultsPanel(QWidget):
             "Spline polynomial degree (1..5). Higher degree allows more curvature."
         )
 
-        layout.addRow("px2micron", self.px2micron)
-        layout.addRow("movie_time_interval_sec", self.movie_dt)
-        layout.addRow("keep_every", self.keep_every)
-        layout.addRow("smoothing", self.smoothing)
-        layout.addRow("degree", self.degree)
+        movie_form.addRow("px2micron", self.px2micron)
+        movie_form.addRow("Movie time interval (s)", self.movie_dt)
+        line_form.addRow("smoothing", self.smoothing)
+        line_form.addRow("degree", self.degree)
+
+        root.addWidget(self.movie_box)
+        root.addWidget(self.line_box)
 
         self._load_persisted()
 
         for w in (
             self.px2micron,
             self.movie_dt,
-            self.keep_every,
             self.smoothing,
             self.degree,
         ):
             w.valueChanged.connect(self._on_change)
 
+    def insert_widget_after_movie(self, widget: QWidget) -> None:
+        """Insert a widget between Movie parameters and Line postprocessing."""
+        lay = self.layout()
+        if not isinstance(lay, QVBoxLayout):
+            return
+        idx = lay.indexOf(self.line_box)
+        if idx < 0:
+            lay.addWidget(widget)
+            return
+        lay.insertWidget(idx, widget)
+
     def values(self) -> dict:
         return {
             "px2micron": float(self.px2micron.value()),
             "movie_time_interval_sec": float(self.movie_dt.value()),
-            "keep_every": int(self.keep_every.value()),
             "smoothing": float(self.smoothing.value()),
             "degree": int(self.degree.value()),
         }
@@ -110,8 +141,6 @@ class DefaultsPanel(QWidget):
             self.px2micron.setValue(float(data["px2micron"]))
         if "movie_time_interval_sec" in data:
             self.movie_dt.setValue(float(data["movie_time_interval_sec"]))
-        if "keep_every" in data:
-            self.keep_every.setValue(int(data["keep_every"]))
         if "smoothing" in data:
             self.smoothing.setValue(float(data["smoothing"]))
         if "degree" in data:

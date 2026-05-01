@@ -4,7 +4,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import Qt
+import yaml
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -14,6 +15,9 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMessageBox,
     QFileDialog,
+    QSizePolicy,
+    QComboBox,
+    QGroupBox,
 )
 
 from .services.analyze_worker import AnalyzeWorker, GenerateFigureWorker
@@ -26,12 +30,19 @@ from .services.pipeline_adapter import (
     compute_cytoplasm_size_over_time,
     update_apical_height_in_config,
 )
+from scripts.annotation_source import (
+    build_apical_alignment_v2,
+    raw_clicks_to_time_depth,
+    write_annotation_tsv,
+)
 from .services.sample_state import AcquisitionParams, SampleState
+from .services.session_restore import has_restorable_session, restore_interactive_session
 from .widgets.defaults_panel import DefaultsPanel
 from .widgets.drop_list import DropListWidget
 from .widgets.threshold_panel import ThresholdPanel
 from .widgets.front_panel import FrontPanel
 from .widgets.result_panel import ResultPanel
+from .widgets.movie_preview_dialog import MoviePreviewDialog
 
 
 class MainWindow(QMainWindow):
@@ -44,6 +55,7 @@ class MainWindow(QMainWindow):
         self.current_path: str | None = None
         self._analyze_worker = None
         self._figure_worker = None
+        self._movie_preview: MoviePreviewDialog | None = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -52,6 +64,10 @@ class MainWindow(QMainWindow):
         self.threshold_panel = ThresholdPanel()
         self.front_panel = FrontPanel()
         self.result_panel = ResultPanel()
+        self.result_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         self.defaults_panel = DefaultsPanel()
         threshold_controls = self.threshold_panel.detach_footer_widget()
 
@@ -61,8 +77,15 @@ class MainWindow(QMainWindow):
         left_images_layout = QHBoxLayout(left_images)
         left_images_layout.setContentsMargins(0, 0, 0, 0)
         left_images_layout.setSpacing(8)
-        self.threshold_panel.setMinimumSize(520, 520)
-        self.front_panel.setMinimumSize(520, 520)
+        # Fill full workspace height so both plot columns share vertical space.
+        self.threshold_panel.setMinimumSize(320, 200)
+        self.front_panel.setMinimumSize(320, 200)
+        plot_policy = QSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        self.threshold_panel.setSizePolicy(plot_policy)
+        self.front_panel.setSizePolicy(plot_policy)
         left_images_layout.addWidget(self.threshold_panel, 1)
         left_images_layout.addWidget(self.front_panel, 1)
         top_layout.addWidget(left_images, 3)
@@ -70,9 +93,33 @@ class MainWindow(QMainWindow):
         right_column = QWidget()
         right_layout = QVBoxLayout(right_column)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(8)
+        right_layout.setSpacing(4)
+
+        apical_tip = (
+            "Longest run: apical from the longest cytoplasm segment per column.\n"
+            "Island: click masked islands on the left kymograph; column-wise vertical center = apex."
+        )
+        apical_box = QGroupBox("Apical detection")
+        apical_inner = QVBoxLayout(apical_box)
+        apical_inner.setContentsMargins(6, 8, 6, 6)
+        apical_inner.setSpacing(4)
+        apical_row = QHBoxLayout()
+        apical_row.setSpacing(6)
+        self.apical_mode_label = QLabel("Method:")
+        self.apical_mode_label.setToolTip(apical_tip)
+        self.apical_mode_combo = QComboBox()
+        self.apical_mode_combo.setToolTip(apical_tip)
+        self.apical_mode_combo.addItem("Island (click to select)")
+        self.apical_mode_combo.addItem("Longest cytoplasm run")
+        self.apical_mode_combo.setCurrentIndex(0)
+        self.apical_mode_combo.currentIndexChanged.connect(self._on_apical_mode_changed)
+        apical_row.addWidget(self.apical_mode_label, 0)
+        apical_row.addWidget(self.apical_mode_combo, 1)
+        apical_inner.addLayout(apical_row)
+        apical_inner.addWidget(threshold_controls)
+        self.defaults_panel.insert_widget_after_movie(apical_box)
+
         right_layout.addWidget(self.defaults_panel, 0)
-        right_layout.addWidget(threshold_controls, 0)
         right_layout.addWidget(self.result_panel, 1)
         right_column.setMinimumWidth(330)
         top_layout.addWidget(right_column, 1)
@@ -86,16 +133,22 @@ class MainWindow(QMainWindow):
         self.generate_btn.setToolTip(
             "Run spline fitting, export geometry CSV, and regenerate result figures."
         )
+        self.preview_movie_btn = QPushButton("Preview movie…")
+        self.preview_movie_btn.setToolTip(
+            "Open the delta movie (MP4 with front markers) in a separate window."
+        )
         self.status_label = QLabel("Idle")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         self.save_btn.setEnabled(False)
         self.generate_btn.setEnabled(False)
+        self.preview_movie_btn.setEnabled(False)
 
         controls.addWidget(self.open_files_btn)
         controls.addWidget(self.analyze_btn)
         controls.addWidget(self.save_btn)
         controls.addWidget(self.generate_btn)
+        controls.addWidget(self.preview_movie_btn)
         controls.addWidget(self.status_label, 1)
         root.addLayout(controls)
 
@@ -113,10 +166,10 @@ class MainWindow(QMainWindow):
         self.analyze_btn.clicked.connect(self.analyze_current)
         self.save_btn.clicked.connect(self.save_current)
         self.generate_btn.clicked.connect(self.generate_figure)
+        self.preview_movie_btn.clicked.connect(self._open_movie_preview)
 
         self.threshold_panel.threshold_changed.connect(self._on_threshold_changed)
         self.threshold_panel.brightness_changed.connect(self._on_brightness_changed)
-        self.threshold_panel.island_mode_changed.connect(self._on_island_mode_changed)
         self.threshold_panel.island_clicked.connect(self._on_island_clicked)
         self.front_panel.raw_point_added.connect(self._on_raw_point_added)
         self.front_panel.raw_point_moved.connect(self._on_raw_point_moved)
@@ -142,9 +195,24 @@ class MainWindow(QMainWindow):
             self.samples[path] = state
         else:
             self.samples[path].acq_params = AcquisitionParams(**params)
-        self.samples[path].set_use_island_mode(self.threshold_panel.is_island_mode_enabled())
+        self._sync_apical_mode_combo(self.samples[path].use_island_mode)
         self._refresh_panels()
         self._refresh_output_preview()
+        st = self.samples[path]
+        if st.kymograph is None:
+            self.save_btn.setEnabled(False)
+            self.generate_btn.setEnabled(False)
+        QTimer.singleShot(0, self._try_auto_analyze_current)
+
+    def _try_auto_analyze_current(self) -> None:
+        state = self._current_state()
+        if state is None or state.kymograph is not None:
+            return
+        if self._analyze_worker is not None and self._analyze_worker.isRunning():
+            return
+        if not has_restorable_session(state.work_dir):
+            return
+        self.analyze_current()
 
     def open_files_dialog(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -184,6 +252,7 @@ class MainWindow(QMainWindow):
             self.current_path = None
             self.save_btn.setEnabled(False)
             self.generate_btn.setEnabled(False)
+            self.preview_movie_btn.setEnabled(False)
             self.status_label.setText("Idle")
 
     def _refresh_panels(self):
@@ -191,12 +260,30 @@ class MainWindow(QMainWindow):
         if state is None or state.kymograph is None:
             return
 
-        self.threshold_panel.set_data(state.kymograph, state.threshold, state.mask)
+        self.threshold_panel.set_data(
+            state.kymograph,
+            state.threshold,
+            state.mask,
+            state.acq_params.movie_time_interval_sec,
+            state.use_island_mode,
+        )
         self.threshold_panel.set_selected_island_mask(state.selected_island_mask())
 
         crop_top = max(0, state.ref_row - int(round(3.0 / max(state.acq_params.px2micron, 1e-9))))
-        points_display = state.display_points(crop_top)
-        self.front_panel.set_data(state.straight_kymo, points_display, state.shifts, crop_top)
+        points_display = state.display_points(
+            state.ref_row,
+            state.acq_params.px2micron,
+            state.acq_params.movie_time_interval_sec,
+        )
+        self.front_panel.set_data(
+            state.straight_kymo,
+            points_display,
+            state.shifts,
+            crop_top,
+            state.ref_row,
+            state.acq_params.px2micron,
+            state.acq_params.movie_time_interval_sec,
+        )
         self.front_panel.set_brightness(self.threshold_panel.brightness_factor())
 
         self.save_btn.setEnabled(True)
@@ -215,14 +302,20 @@ class MainWindow(QMainWindow):
     def _on_brightness_changed(self, brightness: float):
         self.front_panel.set_brightness(brightness)
 
-    def _on_island_mode_changed(self, enabled: bool):
+    def _sync_apical_mode_combo(self, use_island: bool) -> None:
+        self.apical_mode_combo.blockSignals(True)
+        self.apical_mode_combo.setCurrentIndex(0 if use_island else 1)
+        self.apical_mode_combo.blockSignals(False)
+
+    def _on_apical_mode_changed(self, _index: int) -> None:
         state = self._current_state()
         if state is None:
             return
+        enabled = self.apical_mode_combo.currentIndex() == 0
         state.set_use_island_mode(enabled)
         self.generate_btn.setEnabled(False)
         if enabled:
-            self.status_label.setText("Island mode enabled: click threshold islands")
+            self.status_label.setText("Island mode: click threshold islands on left kymograph")
         else:
             self.status_label.setText("Unsaved changes")
 
@@ -281,7 +374,7 @@ class MainWindow(QMainWindow):
         self._analyze_worker = AnalyzeWorker(
             state.raw_movie_path,
             state.work_dir,
-            state.acq_params.keep_every,
+            self.current_path or "",
         )
         self._analyze_worker.progress.connect(self.status_label.setText)
         self._analyze_worker.done.connect(self._on_analyze_done)
@@ -290,12 +383,27 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Analyze started...")
 
     def _on_analyze_done(self, kymo):
-        state = self._current_state()
+        worker = self._analyze_worker
+        path = worker.sample_path if worker else self.current_path
+        state = self.samples.get(path) if path else None
         if state is None:
             return
         state.set_kymograph(kymo)
-        self.status_label.setText("Analyze complete")
-        self.save_btn.setEnabled(True)
+        restored, note = restore_interactive_session(state)
+        if self.current_path == path:
+            if restored:
+                self._sync_apical_mode_combo(state.use_island_mode)
+                self.status_label.setText(note)
+                self.generate_btn.setEnabled(True)
+            elif note:
+                self._sync_apical_mode_combo(state.use_island_mode)
+                self.status_label.setText(note)
+                self.generate_btn.setEnabled(False)
+            else:
+                self.status_label.setText("Analyze complete")
+                self.generate_btn.setEnabled(False)
+            self.save_btn.setEnabled(True)
+            self._refresh_panels()
 
     def _on_worker_failed(self, message: str):
         QMessageBox.critical(self, "Worker error", message)
@@ -318,14 +426,29 @@ class MainWindow(QMainWindow):
         atomic_write_tiff(track / "YolkMask.tif", mask_u8)
 
         points_raw = np.asarray(state.front_points_raw, dtype=float)
-        time_interval_min = (state.acq_params.movie_time_interval_sec * state.acq_params.keep_every) / 60.0
-        self._save_annotation_tsv(
-            track / "VerticalKymoCelluSelection.tsv",
+        time_interval_min = state.acq_params.movie_time_interval_sec / 60.0
+        time_min, depth_px = raw_clicks_to_time_depth(
             points_raw,
             state.shifts,
             state.kymograph.shape[1] if state.kymograph is not None else 0,
             time_interval_min,
         )
+        alignment = build_apical_alignment_v2(
+            mode="island" if state.use_island_mode else "longest_run",
+            island_labels=sorted(state.selected_island_labels)
+            if state.use_island_mode
+            else [],
+            threshold=float(state.threshold),
+            kymograph_shape=state.kymograph.shape,
+            movie_time_interval_sec=float(state.acq_params.movie_time_interval_sec),
+            time_min=time_min,
+            depth_px=depth_px,
+        )
+        with (track / "apical_alignment.yaml").open("w", encoding="utf-8") as f:
+            yaml.dump(alignment, f, default_flow_style=False, sort_keys=False)
+
+        write_annotation_tsv(str(track / "VerticalKymoCelluSelection.tsv"), time_min, depth_px)
+
         save_compat_roi_placeholder(str(track))
 
         _, _, _, apical_px, _, _, _ = compute_cytoplasm_size_over_time(
@@ -339,34 +462,6 @@ class MainWindow(QMainWindow):
         self.generate_btn.setEnabled(True)
         self.status_label.setText("Saved")
 
-    def _save_annotation_tsv(
-        self,
-        tsv_path: Path,
-        points_raw: np.ndarray,
-        shifts: np.ndarray | None,
-        num_cols: int,
-        time_interval_min: float,
-    ):
-        """
-        Save clicked points in straightened-kymograph coordinates.
-
-        Downstream fit/export scripts expect Depth in straightened space.
-        We store raw points for interactive remapping, then convert here
-        using the *current* shifts at save time.
-        """
-        order = np.argsort(points_raw[:, 0])
-        pts = points_raw[order]
-        time_min = pts[:, 0] * float(time_interval_min)
-        depth_px = pts[:, 1].copy()
-        if shifts is not None and num_cols > 0:
-            for i in range(depth_px.shape[0]):
-                x_idx = int(np.clip(np.rint(float(pts[i, 0])), 0, num_cols - 1))
-                depth_px[i] = float(depth_px[i]) + float(shifts[x_idx])
-        with tsv_path.open("w", encoding="utf-8") as f:
-            f.write("Time\tDepth\n")
-            for t, d in zip(time_min, depth_px):
-                f.write(f"{float(t):.6f}\t{float(d):.6f}\n")
-
     def generate_figure(self):
         state = self._current_state()
         if state is None:
@@ -374,7 +469,7 @@ class MainWindow(QMainWindow):
 
         smoothing = float(state.acq_params.smoothing)
         degree = int(state.acq_params.degree)
-        time_interval_min = (state.acq_params.movie_time_interval_sec * state.acq_params.keep_every) / 60.0
+        time_interval_min = state.acq_params.movie_time_interval_sec / 60.0
 
         self._figure_worker = GenerateFigureWorker(state.work_dir, smoothing, degree, time_interval_min)
         self._figure_worker.progress.connect(self.status_label.setText)
@@ -386,10 +481,38 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Outputs ready")
         self._refresh_output_preview()
 
+    def _update_movie_preview_enabled(self):
+        state = self._current_state()
+        if state is None:
+            self.preview_movie_btn.setEnabled(False)
+            return
+        mp4 = state.work_dir / "results" / "Cellularization_trimmed_delta.mp4"
+        self.preview_movie_btn.setEnabled(mp4.is_file())
+
+    def _open_movie_preview(self):
+        state = self._current_state()
+        if state is None:
+            return
+        mp4 = state.work_dir / "results" / "Cellularization_trimmed_delta.mp4"
+        if not mp4.is_file():
+            QMessageBox.information(
+                self,
+                "No movie",
+                "Run Generate Outputs first to create the delta movie (MP4).",
+            )
+            return
+        if self._movie_preview is None:
+            self._movie_preview = MoviePreviewDialog(self)
+        self._movie_preview.set_source(mp4)
+        self._movie_preview.show()
+        self._movie_preview.raise_()
+        self._movie_preview.activateWindow()
+
     def _refresh_output_preview(self):
         state = self._current_state()
         if state is None:
             return
         png_path = state.work_dir / "results" / "Cellularization.png"
         self.result_panel.show_png(png_path)
+        self._update_movie_preview_enabled()
 

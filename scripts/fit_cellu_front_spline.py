@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fit cellularization front spline from VerticalKymoCelluSelection.tsv and save the fit.
+Fit cellularization front spline from saved annotation and save the fit.
 
 This script is now **fit-only**: it reads the annotated cellularization front
 points, fits a smoothing spline (front depth vs time), and saves the sampled
@@ -8,7 +8,8 @@ curve plus final-height metadata. All plotting/figure generation is handled
 by a separate script.
 
 Assumes a folder containing:
-    - track/VerticalKymoCelluSelection.tsv   (Time, CelluFront)
+    - track/apical_alignment.yaml (version >= 2 with ``front_points``), **or**
+    - track/VerticalKymoCelluSelection.tsv (Time, Depth) — legacy / Snakemake
     - config.yaml
 
 Outputs:
@@ -24,10 +25,16 @@ Usage:
 
 import argparse
 import os
+import sys
 
 import numpy as np
 from scipy.interpolate import UnivariateSpline
 import yaml
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from annotation_source import load_annotation_time_depth  # noqa: E402
 
 
 def load_px2micron_from_config(config_path):
@@ -79,7 +86,7 @@ def fit_and_save(folder: str, smoothing: float = 0.0, degree: int = 3, time_inte
     Parameters
     ----------
     folder : str
-        Base folder containing track/VerticalKymoCelluSelection.tsv and track/Kymograph.tif.
+        Base folder containing track annotation (YAML v2 or legacy TSV) and config.yaml.
     smoothing : float
         Spline smoothing factor `s` (0 = interpolate exactly).
     degree : int
@@ -87,19 +94,16 @@ def fit_and_save(folder: str, smoothing: float = 0.0, degree: int = 3, time_inte
     """
     # Use track subfolder
     track_folder = os.path.join(folder, "track")
-    tsv_path = os.path.join(track_folder, "VerticalKymoCelluSelection.tsv")
-
-    if not os.path.isfile(tsv_path):
-        raise FileNotFoundError(f"VerticalKymoCelluSelection.tsv not found in: {track_folder}")
 
     # Load px2micron from config.yaml
     config_path = os.path.join(folder, 'config.yaml')
     px2micron = load_px2micron_from_config(config_path)
 
-    print(f"Loading cellularization front data from: {tsv_path}")
-    data = np.loadtxt(tsv_path, delimiter="\t", skiprows=1)
-    time_min = data[:, 0]      # Time is already in minutes (from annotation/averaging)
-    cellu_front = data[:, 1]    # front depth in straightened-kymograph pixels
+    time_min, cellu_front = load_annotation_time_depth(track_folder)
+    print(
+        "Loaded cellularization front data from apical_alignment.yaml (v2) or legacy TSV "
+        f"({len(time_min)} points)"
+    )
 
     # Load ref_row from straighten_metadata (the apical reference row in straightened space).
     meta_path = os.path.join(track_folder, "straighten_metadata.yaml")
@@ -205,7 +209,7 @@ def fit_and_save(folder: str, smoothing: float = 0.0, degree: int = 3, time_inte
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fit cellularization front function from VerticalKymoCelluSelection.tsv",
+        description="Fit cellularization front from apical_alignment.yaml (v2) or legacy TSV",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -214,7 +218,7 @@ def main():
         "--work-dir",
         type=str,
         required=True,
-        help="Working directory containing track/VerticalKymoCelluSelection.tsv and config.yaml",
+        help="Working directory containing track/ annotation and config.yaml",
     )
 
     parser.add_argument(

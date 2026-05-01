@@ -7,18 +7,14 @@ import yaml
 def build_runtime_config(params: dict) -> dict:
     px2micron = float(params["px2micron"])
     movie_time_interval_sec = float(params["movie_time_interval_sec"])
-    keep_every = int(params["keep_every"])
     smoothing = float(params.get("smoothing", 0.0))
     degree = int(params.get("degree", 1))
-    time_interval_sec = movie_time_interval_sec * keep_every
+    time_interval_sec = movie_time_interval_sec
 
     cfg = {
         "manual": {
             "px2micron": px2micron,
             "movie_time_interval_sec": movie_time_interval_sec,
-        },
-        "preprocessing": {
-            "keep_every": keep_every,
         },
         "spline": {
             "smoothing": smoothing,
@@ -49,6 +45,11 @@ def load_or_create_config(work_dir: Path, params: dict) -> dict:
     # Remove deprecated UI options from runtime config to keep this simple.
     cfg.pop("time_window", None)
     cfg.pop("visualization", None)
+    prep = cfg.get("preprocessing")
+    if isinstance(prep, dict):
+        prep.pop("keep_every", None)
+        if not prep:
+            cfg.pop("preprocessing", None)
 
     with config_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
