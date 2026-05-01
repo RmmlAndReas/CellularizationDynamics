@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtCore import QEvent, QPoint, Qt
-from PyQt6.QtGui import QGuiApplication, QPixmap
+from PyQt6.QtGui import QGuiApplication, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QSizePolicy
 
 
@@ -50,6 +50,14 @@ class ResultPanel(QWidget):
         self.footer_spacer.setMaximumHeight(0)
         layout.addWidget(self.footer_spacer)
 
+        esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        esc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        esc.activated.connect(self._hide_preview_if_visible)
+
+    def _hide_preview_if_visible(self) -> None:
+        if self._preview_visible:
+            self._hide_preview()
+
     def show_png(self, png_path: Path):
         if not png_path.exists():
             self._original_pixmap = QPixmap()
@@ -70,7 +78,7 @@ class ResultPanel(QWidget):
 
         self._original_pixmap = pix
         self.image_label.setText("")
-        self.hint_label.setText("Click image to enlarge (click again to hide)")
+        self.hint_label.setText("Click image to enlarge (Esc or click again to hide)")
         self._render_scaled()
 
     def resizeEvent(self, event):

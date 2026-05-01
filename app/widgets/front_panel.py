@@ -20,7 +20,7 @@ from ..services.geometry_transform import raw_from_straight, straight_from_um
 
 class FrontPanel(QWidget):
     raw_point_added = pyqtSignal(float, float)
-    raw_point_moved = pyqtSignal(int, float, float)
+    raw_point_moved = pyqtSignal(int, float, float, bool)
     undo_requested = pyqtSignal()
     clear_requested = pyqtSignal()
 
@@ -89,6 +89,7 @@ class FrontPanel(QWidget):
         ref_row,
         px2micron,
         movie_time_interval_sec: float,
+        contrast_source: np.ndarray | None = None,
     ):
         prev_num_cols = self.num_cols
         self.straight_kymo = straight_kymo
@@ -116,14 +117,20 @@ class FrontPanel(QWidget):
             self.pan_slider.setValue(0)
             self._updating_slider = False
         if self.straight_kymo is not None:
-            view = self.straight_kymo[self.crop_top :, :]
-            self.base_vmin = float(np.percentile(view, 1))
-            self.base_vmax = float(np.percentile(view, 99))
+            # Use raw (or other fixed) intensities for display limits so apical/island
+            # shifts do not rescale the straight kymograph when the crop changes.
+            csrc = contrast_source if contrast_source is not None else self.straight_kymo
+            self.base_vmin = float(np.percentile(csrc, 1))
+            self.base_vmax = float(np.percentile(csrc, 99))
             if self.base_vmax <= self.base_vmin:
-                self.base_vmin = float(np.min(view))
-                self.base_vmax = float(np.max(view))
+                self.base_vmin = float(np.min(csrc))
+                self.base_vmax = float(np.max(csrc))
                 if self.base_vmax <= self.base_vmin:
                     self.base_vmax = self.base_vmin + 1.0
+        self.redraw()
+
+    def set_points_display(self, points_display: np.ndarray):
+        self.points_display = np.asarray(points_display, dtype=float)
         self.redraw()
 
     def redraw(self):
@@ -188,7 +195,9 @@ class FrontPanel(QWidget):
             return
         if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
             return
-        self._emit_moved_point(self._dragging_idx, float(event.xdata), float(event.ydata))
+        self._emit_moved_point(
+            self._dragging_idx, float(event.xdata), float(event.ydata), committed=False
+        )
 
     def _on_release(self, event):
         if self._dragging_idx is None:
@@ -197,7 +206,7 @@ class FrontPanel(QWidget):
         self._dragging_idx = None
         if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
             return
-        self._emit_moved_point(idx, float(event.xdata), float(event.ydata))
+        self._emit_moved_point(idx, float(event.xdata), float(event.ydata), committed=True)
 
     def _nearest_point_index(self, event) -> int | None:
         if not self.points_display.size or event.xdata is None or event.ydata is None:
@@ -210,7 +219,7 @@ class FrontPanel(QWidget):
             return None
         return idx
 
-    def _emit_moved_point(self, idx: int, x: float, depth_um: float):
+    def _emit_moved_point(self, idx: int, x: float, depth_um: float, *, committed: bool):
         if self.straight_kymo is None or self.shifts is None or self.num_cols <= 0:
             return
         x_max_min = float(max(self.num_cols - 1, 0)) * self._dt_min
@@ -228,7 +237,7 @@ class FrontPanel(QWidget):
         x_idx = int(np.clip(np.rint(x_clamped), 0, max(self.num_cols - 1, 0)))
         straight_row = straight_from_um(depth_clamped, self.ref_row, self.px2micron)
         y_raw = raw_from_straight(straight_row, float(self.shifts[x_idx]))
-        self.raw_point_moved.emit(int(idx), x_clamped, y_raw)
+        self.raw_point_moved.emit(int(idx), x_clamped, y_raw, committed)
 
     def _on_key(self, event):
         key = (event.key or "").lower()

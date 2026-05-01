@@ -1,0 +1,17 @@
+name: celludynamics
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pyqt6
+  - numpy
+  - scipy
+  - matplotlib
+  - tifffile
+  - pillow
+  - pyyaml
+  - imageio
+  - imageio-ffmpeg
+  - pip
+  - pip:
+    - opencv-python-headless

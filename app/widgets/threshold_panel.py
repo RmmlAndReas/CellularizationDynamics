@@ -172,7 +172,7 @@ class ThresholdPanel(QWidget):
 
         self.ax.set_title("Apical Border Detection")
         self.ax.set_xlabel("Time (min)")
-        self.ax.set_ylabel("depth")
+        self.ax.set_ylabel("Depth (px)")
         self.canvas.draw_idle()
 
     def _brightness_changed(self, _val: int):

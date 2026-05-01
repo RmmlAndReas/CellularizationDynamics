@@ -27,7 +27,7 @@ def _format_ms(ms: int) -> str:
 
 class MoviePreviewDialog(QDialog):
     """
-    Modeless preview for Cellularization_trimmed_delta.mp4 (play, pause, seek).
+    Modeless preview for Cellularization_front_markers.mp4 (play, pause, seek).
 
     Uses OpenCV + QLabel instead of QMediaPlayer: conda-forge ``pyqt6`` does not
     include ``PyQt6.QtMultimedia`` bindings.
@@ -35,7 +35,7 @@ class MoviePreviewDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Delta movie preview")
+        self.setWindowTitle("Front markers preview")
         self.setMinimumSize(640, 480)
 
         self._slider_drag = False

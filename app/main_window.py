@@ -4,7 +4,6 @@ from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
-import yaml
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -18,22 +17,30 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QComboBox,
     QGroupBox,
+    QSpinBox,
 )
 
 from .services.analyze_worker import AnalyzeWorker, GenerateFigureWorker
-from .services.config_io import load_or_create_config
+from .services.config_io import (
+    load_or_create_config,
+    merge_kymograph_fields,
+    merge_visualization_fields,
+    read_averaging_width_pct,
+    read_averaging_width_pct_for_ui,
+    read_averaging_width_pct_last_built,
+    read_kymograph_brightness,
+    save_apical_alignment,
+)
 from .services.metadata_reader import read_imagej_params
 from .services.io import atomic_write_tiff
 from .services.output_layout import work_dir_for, ensure_work_tree
 from .services.pipeline_adapter import (
-    save_compat_roi_placeholder,
     compute_cytoplasm_size_over_time,
     update_apical_height_in_config,
 )
-from scripts.annotation_source import (
+from core.annotation_source import (
     build_apical_alignment_v2,
     raw_clicks_to_time_depth,
-    write_annotation_tsv,
 )
 from .services.sample_state import AcquisitionParams, SampleState
 from .services.session_restore import has_restorable_session, restore_interactive_session
@@ -99,7 +106,13 @@ class MainWindow(QMainWindow):
             "Longest run: apical from the longest cytoplasm segment per column.\n"
             "Island: click masked islands on the left kymograph; column-wise vertical center = apex."
         )
-        apical_box = QGroupBox("Apical detection")
+        kymograph_width_pct_tip = (
+            "When Analyze builds the vertical kymograph, each frame is collapsed along x by "
+            "averaging intensity over this percentage of the movie width, centered on the image.\n\n"
+            "100%: average across the full width.\n"
+            "Lower values: use only a central band (useful to drop edge artifacts or uneven illumination)."
+        )
+        apical_box = QGroupBox("Kymograph / Apical detection")
         apical_inner = QVBoxLayout(apical_box)
         apical_inner.setContentsMargins(6, 8, 6, 6)
         apical_inner.setSpacing(4)
@@ -116,6 +129,19 @@ class MainWindow(QMainWindow):
         apical_row.addWidget(self.apical_mode_label, 0)
         apical_row.addWidget(self.apical_mode_combo, 1)
         apical_inner.addLayout(apical_row)
+        pct_row = QHBoxLayout()
+        pct_row.setSpacing(6)
+        self.kymograph_width_label = QLabel("Width % for kymograph")
+        self.kymograph_width_label.setToolTip(kymograph_width_pct_tip)
+        self.kymograph_width_spin = QSpinBox()
+        self.kymograph_width_spin.setRange(1, 100)
+        self.kymograph_width_spin.setValue(50)
+        self.kymograph_width_spin.setSuffix(" %")
+        self.kymograph_width_spin.setToolTip(kymograph_width_pct_tip)
+        self.kymograph_width_spin.valueChanged.connect(self._on_averaging_width_pct_changed)
+        pct_row.addWidget(self.kymograph_width_label, 0)
+        pct_row.addWidget(self.kymograph_width_spin, 1)
+        apical_inner.addLayout(pct_row)
         apical_inner.addWidget(threshold_controls)
         self.defaults_panel.insert_widget_after_movie(apical_box)
 
@@ -135,7 +161,7 @@ class MainWindow(QMainWindow):
         )
         self.preview_movie_btn = QPushButton("Preview movie…")
         self.preview_movie_btn.setToolTip(
-            "Open the delta movie (MP4 with front markers) in a separate window."
+            "Open the front-markers MP4 preview in a separate window."
         )
         self.status_label = QLabel("Idle")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -181,6 +207,26 @@ class MainWindow(QMainWindow):
             return None
         return self.samples.get(self.current_path)
 
+    def _compose_kymograph_width_status(self, base: str = "") -> str:
+        """Append width % / last-built hints to a status message."""
+        state = self._current_state()
+        parts: list[str] = []
+        b = (base or "").strip()
+        if b:
+            parts.append(b)
+        if state is None:
+            return " ".join(parts) if parts else ""
+        committed = read_averaging_width_pct(state.work_dir)
+        spin = self.kymograph_width_spin.value()
+        if spin != committed:
+            parts.append(f"Width {spin}% not saved (config has {committed}%).")
+        lb = read_averaging_width_pct_last_built(state.work_dir)
+        if lb is not None and spin != lb:
+            parts.append(
+                f"Kymograph on disk was built with {lb}% width; active is {spin}% — run Analyze to rebuild."
+            )
+        return " ".join(parts) if parts else ""
+
     def _on_file_selected(self, path: str):
         self.current_path = path
         # Refresh main settings directly from the clicked movie metadata.
@@ -196,8 +242,14 @@ class MainWindow(QMainWindow):
         else:
             self.samples[path].acq_params = AcquisitionParams(**params)
         self._sync_apical_mode_combo(self.samples[path].use_island_mode)
+        pct = read_averaging_width_pct_for_ui(self.samples[path].work_dir)
+        self.kymograph_width_spin.blockSignals(True)
+        self.kymograph_width_spin.setValue(pct)
+        self.kymograph_width_spin.blockSignals(False)
         self._refresh_panels()
         self._refresh_output_preview()
+        wmsg = self._compose_kymograph_width_status()
+        self.status_label.setText(wmsg if wmsg.strip() else "Idle")
         st = self.samples[path]
         if st.kymograph is None:
             self.save_btn.setEnabled(False)
@@ -260,6 +312,13 @@ class MainWindow(QMainWindow):
         if state is None or state.kymograph is None:
             return
 
+        br = read_kymograph_brightness(state.work_dir)
+        self.threshold_panel.brightness_slider.blockSignals(True)
+        self.threshold_panel.brightness_slider.setValue(
+            int(max(20, min(300, round(br * 100.0))))
+        )
+        self.threshold_panel.brightness_slider.blockSignals(False)
+
         self.threshold_panel.set_data(
             state.kymograph,
             state.threshold,
@@ -283,6 +342,7 @@ class MainWindow(QMainWindow):
             state.ref_row,
             state.acq_params.px2micron,
             state.acq_params.movie_time_interval_sec,
+            contrast_source=state.kymograph,
         )
         self.front_panel.set_brightness(self.threshold_panel.brightness_factor())
 
@@ -301,6 +361,11 @@ class MainWindow(QMainWindow):
 
     def _on_brightness_changed(self, brightness: float):
         self.front_panel.set_brightness(brightness)
+        state = self._current_state()
+        if state is not None:
+            merge_visualization_fields(
+                state.work_dir, kymograph_brightness=float(brightness)
+            )
 
     def _sync_apical_mode_combo(self, use_island: bool) -> None:
         self.apical_mode_combo.blockSignals(True)
@@ -318,6 +383,13 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Island mode: click threshold islands on left kymograph")
         else:
             self.status_label.setText("Unsaved changes")
+
+    def _on_averaging_width_pct_changed(self, value: int) -> None:
+        state = self._current_state()
+        if state is None:
+            return
+        self.generate_btn.setEnabled(False)
+        self.status_label.setText(self._compose_kymograph_width_status())
 
     def _on_island_clicked(self, x: float, y: float):
         state = self._current_state()
@@ -339,13 +411,26 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Unsaved changes")
         self.generate_btn.setEnabled(False)
 
-    def _on_raw_point_moved(self, index: int, x: float, y: float):
+    def _refresh_front_points_only(self) -> None:
+        state = self._current_state()
+        if state is None or state.kymograph is None or state.straight_kymo is None:
+            return
+        points_display = state.display_points(
+            state.ref_row,
+            state.acq_params.px2micron,
+            state.acq_params.movie_time_interval_sec,
+        )
+        self.front_panel.set_points_display(points_display)
+
+    def _on_raw_point_moved(self, index: int, x: float, y: float, committed: bool):
         state = self._current_state()
         if state is None:
             return
-        state.update_front_point_raw(index, x, y)
+        state.update_front_point_raw(index, x, y, emit_state_changed=committed)
         self.status_label.setText("Unsaved changes")
         self.generate_btn.setEnabled(False)
+        if not committed:
+            self._refresh_front_points_only()
 
     def _on_undo(self):
         state = self._current_state()
@@ -369,7 +454,12 @@ class MainWindow(QMainWindow):
         state.dirty = False
 
         ensure_work_tree(state.work_dir)
-        load_or_create_config(state.work_dir, asdict(state.acq_params))
+        load_or_create_config(
+            state.work_dir,
+            asdict(state.acq_params),
+            source_movie=state.raw_movie_path.resolve(),
+            averaging_width_pct=self.kymograph_width_spin.value(),
+        )
 
         self._analyze_worker = AnalyzeWorker(
             state.raw_movie_path,
@@ -388,19 +478,23 @@ class MainWindow(QMainWindow):
         state = self.samples.get(path) if path else None
         if state is None:
             return
-        state.set_kymograph(kymo)
+        state.assign_kymograph_only(kymo)
         restored, note = restore_interactive_session(state)
+        if not restored:
+            state.init_threshold_from_percentile_and_recompute()
         if self.current_path == path:
             if restored:
                 self._sync_apical_mode_combo(state.use_island_mode)
-                self.status_label.setText(note)
+                self.status_label.setText(self._compose_kymograph_width_status(note))
                 self.generate_btn.setEnabled(True)
             elif note:
                 self._sync_apical_mode_combo(state.use_island_mode)
-                self.status_label.setText(note)
+                self.status_label.setText(self._compose_kymograph_width_status(note))
                 self.generate_btn.setEnabled(False)
             else:
-                self.status_label.setText("Analyze complete")
+                self.status_label.setText(
+                    self._compose_kymograph_width_status("Analyze complete")
+                )
                 self.generate_btn.setEnabled(False)
             self.save_btn.setEnabled(True)
             self._refresh_panels()
@@ -441,15 +535,8 @@ class MainWindow(QMainWindow):
             threshold=float(state.threshold),
             kymograph_shape=state.kymograph.shape,
             movie_time_interval_sec=float(state.acq_params.movie_time_interval_sec),
-            time_min=time_min,
-            depth_px=depth_px,
         )
-        with (track / "apical_alignment.yaml").open("w", encoding="utf-8") as f:
-            yaml.dump(alignment, f, default_flow_style=False, sort_keys=False)
-
-        write_annotation_tsv(str(track / "VerticalKymoCelluSelection.tsv"), time_min, depth_px)
-
-        save_compat_roi_placeholder(str(track))
+        save_apical_alignment(state.work_dir, alignment, time_min, depth_px)
 
         _, _, _, apical_px, _, _, _ = compute_cytoplasm_size_over_time(
             str(state.work_dir),
@@ -458,9 +545,11 @@ class MainWindow(QMainWindow):
         )
         update_apical_height_in_config(str(state.work_dir), apical_px, state.acq_params.px2micron)
 
+        merge_kymograph_fields(state.work_dir, averaging_width_pct=self.kymograph_width_spin.value())
+
         state.dirty = False
         self.generate_btn.setEnabled(True)
-        self.status_label.setText("Saved")
+        self.status_label.setText(self._compose_kymograph_width_status("Saved"))
 
     def generate_figure(self):
         state = self._current_state()
@@ -486,19 +575,19 @@ class MainWindow(QMainWindow):
         if state is None:
             self.preview_movie_btn.setEnabled(False)
             return
-        mp4 = state.work_dir / "results" / "Cellularization_trimmed_delta.mp4"
+        mp4 = state.work_dir / "results" / "Cellularization_front_markers.mp4"
         self.preview_movie_btn.setEnabled(mp4.is_file())
 
     def _open_movie_preview(self):
         state = self._current_state()
         if state is None:
             return
-        mp4 = state.work_dir / "results" / "Cellularization_trimmed_delta.mp4"
+        mp4 = state.work_dir / "results" / "Cellularization_front_markers.mp4"
         if not mp4.is_file():
             QMessageBox.information(
                 self,
                 "No movie",
-                "Run Generate Outputs first to create the delta movie (MP4).",
+                "Run Generate Outputs first to create the front-markers movie (MP4).",
             )
             return
         if self._movie_preview is None:

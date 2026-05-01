@@ -41,8 +41,23 @@ class SampleState(QObject):
         self.dirty: bool = False
 
     def set_kymograph(self, kymo: np.ndarray) -> None:
+        """Replace kymograph and initialize threshold from median intensity (full recompute)."""
+        self.assign_kymograph_only(kymo)
+        self.init_threshold_from_percentile_and_recompute()
+
+    def assign_kymograph_only(self, kymo: np.ndarray) -> None:
+        """Set raw kymograph array only; clears derived masks/shifts until restore or recompute."""
         self.kymograph = kymo
-        self.threshold = float(np.percentile(kymo, 50))
+        self.threshold = None
+        self.mask = None
+        self.labels = None
+        self.shifts = None
+        self.straight_kymo = None
+
+    def init_threshold_from_percentile_and_recompute(self) -> None:
+        if self.kymograph is None:
+            return
+        self.threshold = float(np.percentile(self.kymograph, 50))
         self.recompute_from_threshold()
 
     def apply_apical_from_saved(
@@ -129,12 +144,20 @@ class SampleState(QObject):
         self.dirty = True
         self.state_changed.emit()
 
-    def update_front_point_raw(self, index: int, x: float, y: float) -> None:
+    def update_front_point_raw(
+        self,
+        index: int,
+        x: float,
+        y: float,
+        *,
+        emit_state_changed: bool = True,
+    ) -> None:
         if index < 0 or index >= len(self.front_points_raw):
             return
         self.front_points_raw[index] = (float(x), float(y))
         self.dirty = True
-        self.state_changed.emit()
+        if emit_state_changed:
+            self.state_changed.emit()
 
     def undo_front_point(self) -> None:
         if self.front_points_raw:
