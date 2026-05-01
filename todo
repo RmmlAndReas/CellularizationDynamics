@@ -1,32 +1,3 @@
 Next: 
 
-1. Make apical detection robust across species with different contrast (plan only, no implementation yet).
-   - Goal: avoid selecting wrong segment when random pixels cross threshold and create fake runs.
-   - Step 1 (diagnostics first): add quick QC outputs from current method per sample
-     - percent of columns with valid run
-     - frame-to-frame jump size of apical border (px)
-     - confidence score = run_length_best / run_length_second_best
-     - save flagged frames where jumps/confidence are abnormal
-   - Step 2 (clean mask before run selection): test lightweight denoising options
-     - median filter on kymograph before thresholding
-     - binary opening/closing on threshold mask to remove isolated pixels
-     - remove connected components smaller than N pixels
-   - Step 3 (improve run selection logic): replace "longest run only" with constrained selection
-     - use previous frame apical position as temporal prior (penalize large jumps)
-     - prefer runs near expected apical zone (top-biased depth range from config)
-     - score = run_length - alpha * distance_from_previous - beta * depth_penalty
-   - Step 4 (post-smoothing): smooth apical trajectory over time
-     - rolling median or Savitzky-Golay
-     - keep raw + smoothed output, use smoothed only for final apical_height
-   - Step 5 (fallback behavior): if confidence is low, do not trust automatic pick
-     - mark frame as uncertain and interpolate from neighboring confident frames
-     - if too many uncertain frames, request manual correction
-   - Step 6 (method presets by species): support selectable detection mode in UI (dropdown)
-     - "Threshold + Longest Run" (current baseline)
-     - "Threshold + Morphology + Prior" (recommended default)
-     - "Edge/Gradient-based Apical Border" (for low contrast where threshold fails)
-     - optional per-species preset in config.yaml so users usually do not adjust manually
-   - Step 7 (evaluation protocol): compare methods before switching default
-     - build small validation set across species (easy, medium, hard contrast)
-     - measure mean absolute apical error vs manual annotation and failure rate
-     - choose default mode based on robustness, not only average error
+1. I think there's a mismatch of the line in the final plot. The line is shifted slightly down compared to the real position of the curve.
