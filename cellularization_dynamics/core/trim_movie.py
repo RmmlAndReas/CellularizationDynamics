@@ -10,11 +10,10 @@ Usage:
 
 import argparse
 import os
-import sys
 
 import yaml
 
-from cellularization_paths import resolve_input_movie_path
+from .cellularization_paths import resolve_input_movie_path
 
 
 def assert_config_readable(config_path):
@@ -33,10 +32,7 @@ def trim_movie(work_dir, data_dir):
     """
     Set acquisition.source_movie to the resolved TIFF under data_dir.
     """
-    _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    if _SCRIPT_DIR not in sys.path:
-        sys.path.insert(0, _SCRIPT_DIR)
-    from work_state import set_source_movie
+    from .work_state import set_source_movie
 
     movie_path = resolve_input_movie_path(data_dir)
     print(f"\nRegistering acquisition movie: {movie_path}")

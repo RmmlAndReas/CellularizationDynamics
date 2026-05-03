@@ -1,7 +1,4 @@
 .vscode/
 .cursor
-app/__pycache__/
-app/**/__pycache__/
-core/__pycache__/
-core/**/__pycache__/
-app/.last_defaults.yaml
+cellularization_dynamics/**/__pycache__/
+cellularization_dynamics/app/.last_defaults.yaml

@@ -38,7 +38,7 @@ from .services.pipeline_adapter import (
     compute_cytoplasm_size_over_time,
     update_apical_height_in_config,
 )
-from core.annotation_source import (
+from cellularization_dynamics.core.annotation_source import (
     build_apical_alignment_v2,
     raw_clicks_to_time_depth,
 )

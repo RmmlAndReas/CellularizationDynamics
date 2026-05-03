@@ -1,0 +1,2 @@
+[console_scripts]
+cdynamics = cellularization_dynamics.app.main:main

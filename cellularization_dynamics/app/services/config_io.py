@@ -2,20 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
-import sys
 from typing import Any
 
 import numpy as np
 
-# Ensure repo root and core are importable when running as app package
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-_CORE = _REPO_ROOT / "core"
-if str(_CORE) not in sys.path:
-    sys.path.insert(0, str(_CORE))
-
-from work_state import (  # noqa: E402
+from cellularization_dynamics.core.work_state import (
     deep_merge,
     default_v2_shell,
     load_state,
@@ -31,7 +22,7 @@ def save_apical_alignment(
     time_min: np.ndarray,
     depth_px: np.ndarray,
 ) -> None:
-    from annotation_source import persist_apical_alignment
+    from cellularization_dynamics.core.annotation_source import persist_apical_alignment
 
     persist_apical_alignment(work_dir, alignment, time_min, depth_px)
 

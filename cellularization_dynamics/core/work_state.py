@@ -182,7 +182,7 @@ def merge_patch(work_dir: str | Path, patch: dict[str, Any]) -> dict[str, Any]:
 
 def _maybe_externalize_sequential_to_tsv(wd: str, norm: dict[str, Any]) -> bool:
     """Write inline front_points / straightening arrays to ``track/*.tsv``; strip from ``norm``."""
-    from track_tabular import (
+    from .track_tabular import (
         externalize_apical_front_if_inline,
         externalize_straightening_if_inline,
     )
@@ -276,7 +276,7 @@ def straightening_meta(work_dir: str | Path) -> dict[str, Any]:
     """Straightening metadata dict; loads ``shifts`` / ``apical_px_by_col`` from TSV when not inline."""
     import numpy as np
 
-    from track_tabular import read_straightening_columns_tsv
+    from .track_tabular import read_straightening_columns_tsv
 
     state = load_state(work_dir, migrate_if_needed=True)
     sec = dict(state.get("straightening") or {})

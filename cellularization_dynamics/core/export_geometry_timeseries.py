@@ -18,21 +18,15 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import sys
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import tifffile
 
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+from cellularization_dynamics.app.services.geometry_transform import raw_from_straight
 
-sys.path.insert(0, os.path.dirname(__file__))
-from mask_utils import compute_apical_column_positions
-from work_state import get_movie_path, pipeline_config_flat, straightening_meta
-
-from app.services.geometry_transform import raw_from_straight
+from .mask_utils import compute_apical_column_positions
+from .work_state import get_movie_path, pipeline_config_flat, straightening_meta
 
 CSV_COLUMNS: List[str] = [
     "col_idx",

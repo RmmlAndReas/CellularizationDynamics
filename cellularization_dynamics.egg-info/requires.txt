@@ -1,0 +1,7 @@
+numpy
+PyQt6
+tifffile
+scipy
+matplotlib
+opencv-python
+pyyaml

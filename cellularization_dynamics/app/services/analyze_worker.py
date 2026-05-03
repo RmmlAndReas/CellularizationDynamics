@@ -16,14 +16,12 @@ from .pipeline_adapter import (
 )
 from .output_layout import ensure_work_tree
 
-import sys
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_CORE = _REPO_ROOT / "core"
-if str(_CORE) not in sys.path:
-    sys.path.insert(0, str(_CORE))
-from annotation_source import load_apical_session_v2_doc  # noqa: E402
-from work_state import get_movie_path, load_state, pipeline_config_flat  # noqa: E402
+from cellularization_dynamics.core.annotation_source import load_apical_session_v2_doc
+from cellularization_dynamics.core.work_state import (
+    get_movie_path,
+    load_state,
+    pipeline_config_flat,
+)
 
 
 def try_load_saved_kymograph(work_dir: str, averaging_pct: float) -> np.ndarray | None:

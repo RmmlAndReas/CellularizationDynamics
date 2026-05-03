@@ -1,34 +1,42 @@
 # Cellularization Dynamics
 
-Desktop app for cellularization annotation and output generation. The repository is **GUI-first**: run the app from the repo root; batch/Snakemake workflows are not used.
+Desktop app for cellularization annotation and output generation. The repository is **GUI-first**: run the GUI via `**cdynamics`** or `**python -m cellularization_dynamics**`; batch/Snakemake workflows are not used.
 
 ## Install
 
-From the repository root:
+### Quick install with conda (three steps)
+
+Use a **dedicated** conda environment so dependencies stay isolated. The examples below name it `**cdynamics`**; you can pick any name.
+
+**1. Create a new environment** (Python 3.10 or newer is required):
 
 ```bash
-conda env create -f environment.yaml
-conda activate celludynamics-gui
+conda create -n cdynamics python=3.12 -y
 ```
+
+**2. Activate it:**
+
+```bash
+conda activate cdynamics
+```
+
+**3. Install from PyPI:**
+
+```bash
+pip install cellularization-dynamics
+```
+
+That installs the `**cellularization_dynamics**` package and registers the `**cdynamics**` command on this environment’s `PATH`. Continue to **Start** below.
 
 ## Start
 
+After a pip install, from any working directory (with the same environment active):
+
 ```bash
-python -m app
+cdynamics
 ```
 
-Always run this from the repository root so the `core` package and `app` resolve correctly.
-
-## Layout
-
-- **`app/`** — PyQt6 application (`python -m app`).
-- **`core/`** — shared image/geometry code used by the app (kymograph, straightening, spline, exports).
-
-## Config and state
-
-Each sample work directory has a single **`config.yaml`** with `schema_version: 2`. It holds acquisition settings (`acquisition.source_movie` points at the original TIFF; no duplicate trimmed stack), kymograph timing, spline options, apical alignment, straightening metadata, spline-fit metadata, and derived summaries. Legacy layouts with separate `track/*.yaml` files are merged into this file on first load.
-
-## GUI workflow
+## How to use?
 
 1. Add one or more `.tif` movies (drag-and-drop or **Open Files**).
 2. Select a movie from the list.

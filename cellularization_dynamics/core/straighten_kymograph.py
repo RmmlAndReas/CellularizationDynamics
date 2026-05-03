@@ -19,21 +19,19 @@ Outputs (in work_dir/track/):
 
 import argparse
 import os
-import sys
 from typing import cast
 
 import numpy as np
 import tifffile
 
-sys.path.insert(0, os.path.dirname(__file__))
-from annotation_source import load_apical_alignment_doc  # noqa: E402
-from mask_utils import (  # noqa: E402
+from .annotation_source import load_apical_alignment_doc
+from .mask_utils import (
     STRAIGHTEN_METADATA_VERSION,
     ApicalMode,
     build_alignment,
 )
-from track_tabular import write_straightening_columns_tsv  # noqa: E402
-from work_state import merge_patch, pipeline_config_flat  # noqa: E402
+from .track_tabular import write_straightening_columns_tsv
+from .work_state import merge_patch, pipeline_config_flat
 
 
 def _load_apical_mode(track: str) -> tuple[str, list[int] | None]:

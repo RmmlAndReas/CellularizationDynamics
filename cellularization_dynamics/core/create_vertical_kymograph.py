@@ -19,15 +19,11 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 
 import numpy as np
 import tifffile
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPT_DIR)
-from work_state import get_movie_path, load_state  # noqa: E402
+from .work_state import get_movie_path, load_state
 
 
 def horizontal_roi_from_averaging_pct(movie_width: int, pct: float) -> tuple[int, int]:
@@ -110,7 +106,7 @@ def create_single_kymograph(
     tifffile.imwrite(output_path, kymograph)
     print(f"  Saved to: {output_path}")
     if record_averaging_width_pct is not None:
-        from work_state import merge_patch
+        from .work_state import merge_patch
 
         wd = os.path.abspath(folder)
         pct_i = int(max(1, min(100, round(float(record_averaging_width_pct)))))

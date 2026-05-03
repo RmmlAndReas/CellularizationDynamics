@@ -7,7 +7,6 @@ Writes apical scalars to ``config.yaml`` and the front polyline to ``track/apica
 
 import argparse
 import os
-import sys
 
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
@@ -15,11 +14,8 @@ import numpy as np
 from scipy.interpolate import UnivariateSpline
 import tifffile
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPT_DIR)
-from annotation_source import build_apical_alignment_v2, persist_apical_alignment
-from work_state import load_state, pipeline_config_flat, straightening_meta
+from .annotation_source import build_apical_alignment_v2, persist_apical_alignment
+from .work_state import load_state, pipeline_config_flat, straightening_meta
 
 
 def load_config(work_dir):

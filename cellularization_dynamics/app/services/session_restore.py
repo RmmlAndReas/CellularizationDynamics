@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from core.annotation_source import (
+from cellularization_dynamics.core.annotation_source import (
     load_apical_session_v2_doc,
     session_front_time_depth,
     time_depth_to_raw_clicks,

@@ -14,16 +14,12 @@ Outputs:
 
 import argparse
 import os
-import sys
 
 import numpy as np
 from scipy.interpolate import UnivariateSpline
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPT_DIR)
-from annotation_source import load_annotation_time_depth  # noqa: E402
-from work_state import merge_patch, pipeline_config_flat, straightening_meta  # noqa: E402
+from .annotation_source import load_annotation_time_depth
+from .work_state import merge_patch, pipeline_config_flat, straightening_meta
 
 
 def load_px2micron_from_work_dir(folder: str) -> float:

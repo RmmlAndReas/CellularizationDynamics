@@ -28,12 +28,8 @@ This script combines core logic from:
 import argparse
 import csv
 import os
-import sys
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPT_DIR)
-from work_state import (  # noqa: E402
+from .work_state import (
     FRONT_MARKERS_MP4,
     get_movie_path,
     load_state,

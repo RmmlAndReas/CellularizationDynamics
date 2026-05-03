@@ -10,7 +10,6 @@ and updates config.yaml with mean apical height.
 
 import argparse
 import os
-import sys
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
@@ -18,9 +17,8 @@ from matplotlib.widgets import Button, Slider
 import numpy as np
 import tifffile
 
-sys.path.insert(0, os.path.dirname(__file__))
-from mask_utils import select_cytoplasm_run
-from work_state import merge_patch, pipeline_config_flat
+from .mask_utils import select_cytoplasm_run
+from .work_state import merge_patch, pipeline_config_flat
 
 
 def load_px2micron(work_dir):

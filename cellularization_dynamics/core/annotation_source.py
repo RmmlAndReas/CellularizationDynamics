@@ -5,7 +5,6 @@ polyline in ``track/apical_front.tsv``.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -21,11 +20,8 @@ def load_apical_alignment_doc(track_folder: str) -> dict[str, Any] | None:
     ``track/apical_front.tsv`` when not stored inline (after externalization).
     """
     wd = _work_dir_from_track(track_folder)
-    _core = Path(__file__).resolve().parent
-    if str(_core) not in sys.path:
-        sys.path.insert(0, str(_core))
-    from track_tabular import read_apical_front_tsv
-    from work_state import load_state
+    from .track_tabular import read_apical_front_tsv
+    from .work_state import load_state
 
     state = load_state(wd, migrate_if_needed=True)
     doc = state.get("apical_alignment")
@@ -93,11 +89,8 @@ def persist_apical_alignment(
     depth_px: np.ndarray,
 ) -> None:
     """Write ``track/apical_front.tsv`` and merge ``apical_alignment`` scalars into config."""
-    _core = Path(__file__).resolve().parent
-    if str(_core) not in sys.path:
-        sys.path.insert(0, str(_core))
-    from track_tabular import write_apical_front_tsv
-    from work_state import merge_patch
+    from .track_tabular import write_apical_front_tsv
+    from .work_state import merge_patch
 
     write_apical_front_tsv(work_dir, time_min, depth_px)
     merge_patch(work_dir, {"apical_alignment": dict(alignment_scalars)})
