@@ -216,16 +216,25 @@ def main():
 
     state = load_state(args.work_dir, migrate_if_needed=True)
     existing = state.get("apical_alignment") or {}
-    mode = str(existing.get("mode", "longest_run")).strip()
+    mode = str(existing.get("mode", "island")).strip()
     labels = [int(x) for x in (existing.get("island_labels") or [])]
-    if mode == "island" and not labels:
-        mode = "longest_run"
+    if mode == "manual":
+        raise SystemExit(
+            "cellu_front_annotation does not support manual apical mode. "
+            "Annotate the cellularization front in the desktop app and Save; "
+            "that already persists the manual apical_alignment alongside the front."
+        )
+    if mode == "longest_run" or mode != "island" or not labels:
+        raise SystemExit(
+            "apical_alignment must use mode island with non-empty island_labels. "
+            "Fix config.yaml or re-save from the desktop."
+        )
     threshold = float(existing.get("threshold", 0.5))
     movie_sec = float(time_interval_min) * 60.0
     h, w = corrected_kymo.shape
     alignment = build_apical_alignment_v2(
-        mode=mode,
-        island_labels=labels if mode == "island" else [],
+        mode="island",
+        island_labels=labels,
         threshold=threshold,
         kymograph_shape=(int(h), int(w)),
         movie_time_interval_sec=movie_sec,

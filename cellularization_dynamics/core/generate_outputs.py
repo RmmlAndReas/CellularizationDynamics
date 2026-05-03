@@ -28,6 +28,7 @@ This script combines core logic from:
 import argparse
 import csv
 import os
+import subprocess
 
 from .work_state import (
     FRONT_MARKERS_MP4,
@@ -41,8 +42,55 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.patheffects as path_effects
 import matplotlib.pyplot as plt
+import cv2
 import numpy as np
 import tifffile
+
+
+def format_experiment_hms(total_seconds: int) -> str:
+    """HH:MM:SS from elapsed experiment time in whole seconds (may exceed 24 h)."""
+    if total_seconds < 0:
+        total_seconds = 0
+    h, rem = divmod(int(total_seconds), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def draw_timestamp_bottom_left_rgb(
+    rgb: np.ndarray,
+    text: str,
+    *,
+    color_rgb: tuple[int, int, int],
+    size_px: int,
+) -> None:
+    """Draw ``text`` on uint8 RGB [H,W,3] in place, bottom-left (OpenCV)."""
+    h, _w, _c = rgb.shape
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.35, float(size_px) / 22.0)
+    thickness = max(1, int(round(float(size_px) / 14.0)))
+    color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
+    (_tw, th), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+    margin = 8
+    x = margin
+    y = h - margin - baseline
+    if y < th + margin:
+        y = th + margin
+    cv2.putText(bgr, text, (x, y), font, font_scale, color_bgr, thickness, cv2.LINE_AA)
+    rgb[:] = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+
+def burn_timestamp_on_u16_rgb_frame(
+    frame_u16: np.ndarray,
+    text: str,
+    *,
+    color_rgb: tuple[int, int, int],
+    size_px: int,
+) -> None:
+    """Burn timestamp into uint16 RGB frame in place (matches MP4 encode scaling)."""
+    u8 = np.clip(frame_u16.astype(np.float32) / 257.0, 0.0, 255.0).astype(np.uint8).copy()
+    draw_timestamp_bottom_left_rgb(u8, text, color_rgb=color_rgb, size_px=size_px)
+    frame_u16[:] = np.minimum(65535, u8.astype(np.uint32) * 257).astype(np.uint16)
 
 
 # Match PDF/text settings used previously for Affinity compatibility
@@ -57,6 +105,83 @@ SPINE_LINEWIDTH = 3
 TICK_MAJOR_LENGTH = 8
 TICK_MAJOR_WIDTH = 3
 APICAL_HEADROOM_UM = 2.0
+
+
+def _movie_intensity_percentiles(
+    movie: np.ndarray, p_lo: float = 2.0, p_hi: float = 99.5
+) -> tuple[float, float]:
+    """Robust global intensity bounds for autoscaling the acquisition movie (subsampled)."""
+    m = np.asarray(movie)
+    n = int(m.size)
+    stride = max(1, n // 2_000_000)
+    flat = m.ravel()[::stride].astype(np.float64, copy=False)
+    lo, hi = np.percentile(flat, [p_lo, p_hi])
+    lo_f, hi_f = float(lo), float(hi)
+    if hi_f <= lo_f + 1e-12:
+        lo_f, hi_f = float(np.min(m)), float(np.max(m))
+        if hi_f <= lo_f:
+            hi_f = lo_f + 1.0
+    return lo_f, hi_f
+
+
+def _autoscale_acquisition_movie_gray_u16(
+    movie: np.ndarray, kymograph_brightness: float
+) -> np.ndarray:
+    """
+    Map acquisition stack to uint16 grayscale for MP4 encoding.
+
+    Uses global percentile autoscale (2nd–99.5th by default), then multiplies by
+    ``kymograph_brightness`` in the same sense as the kymograph GUI (>1 brightens).
+    """
+    lo, hi = _movie_intensity_percentiles(movie)
+    m = (movie.astype(np.float64) - lo) / (hi - lo)
+    m = np.clip(m, 0.0, 1.0)
+    b = max(0.2, min(3.0, float(kymograph_brightness)))
+    m = np.clip(m * b, 0.0, 1.0)
+    print(
+        f"  Movie autoscale: intensity {lo:.6g} .. {hi:.6g} "
+        f"(saved kymograph_brightness ×{b:.2g} applied after linear stretch)"
+    )
+    return (m * 65535.0).astype(np.uint16)
+
+
+def _rgb_u8_to_u16(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
+    r, g, b = (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+    return (
+        int(round(r * 65535 / 255)),
+        int(round(g * 65535 / 255)),
+        int(round(b * 65535 / 255)),
+    )
+
+
+def _draw_dashed_horizontal_u16(
+    rgb_frame: np.ndarray,
+    y: float,
+    color_rgb_u16: tuple[int, int, int],
+    *,
+    dash_px: int = 14,
+    gap_px: int = 8,
+    thickness_px: int = 2,
+) -> None:
+    """Draw a full-width dashed horizontal line on a uint16 RGB frame [H,W,3]."""
+    h, w, _c = rgb_frame.shape
+    y0 = int(np.clip(int(round(y)), 0, h - 1))
+    r16, g16, b16 = color_rgb_u16
+    x = 0
+    draw_segment = True
+    while x < w:
+        seg = dash_px if draw_segment else gap_px
+        x_end = min(w, x + seg)
+        if draw_segment:
+            for xi in range(x, x_end):
+                for dy in range(-(thickness_px // 2), thickness_px - (thickness_px // 2)):
+                    yy = y0 + dy
+                    if 0 <= yy < h:
+                        rgb_frame[yy, xi, 0] = r16
+                        rgb_frame[yy, xi, 1] = g16
+                        rgb_frame[yy, xi, 2] = b16
+        x = x_end
+        draw_segment = not draw_segment
 
 
 def _kymograph_limits_like_front_panel(raw_kymo: np.ndarray, brightness: float) -> tuple[float, float]:
@@ -286,6 +411,84 @@ def load_geometry_timeseries_csv(folder, dt_min_kymo, path=None):
     }
 
 
+def load_front_furrow_stamp_time_bounds_minutes(
+    work_dir: str | os.PathLike[str],
+) -> tuple[float, float] | None:
+    """
+    First and last geometry time (minutes) where ``front_raw_px`` is finite.
+
+    Same time axis as ``mark_delta_on_trimmed_movie`` (prefers ``time_abs_min``
+    when present). Used for furrow-relative timestamps (0 until first detection,
+    then elapsed time, frozen after the last valid front).
+    """
+    wd = os.fspath(work_dir)
+    try:
+        cfg = load_config(wd)
+        dt_min_kymo = cfg["kymograph_time_interval_sec"] / 60.0
+        gs = load_geometry_timeseries_csv(wd, dt_min_kymo)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    geom_time = gs["time_min"]
+    ta = gs.get("time_abs_min")
+    if ta is not None and np.any(np.isfinite(ta)):
+        geom_time = ta
+    front = gs["front_raw_px"]
+    valid = ~np.isnan(front) & np.isfinite(geom_time)
+    if not np.any(valid):
+        return None
+    gv = np.asarray(geom_time[valid], dtype=float)
+    return (float(gv.min()), float(gv.max()))
+
+
+def furrow_relative_stamp_seconds(
+    frame_idx: int,
+    movie_time_interval_sec: float,
+    t_first_valid_min: float,
+    t_last_valid_min: float,
+) -> int:
+    """Elapsed whole seconds for the on-movie stamp (0 → rise → hold at span)."""
+    mdt = float(movie_time_interval_sec)
+    time_min = frame_idx * mdt / 60.0
+    if time_min < t_first_valid_min:
+        return 0
+    span_sec = max(0.0, (t_last_valid_min - t_first_valid_min) * 60.0)
+    if time_min > t_last_valid_min:
+        return int(round(span_sec))
+    return int(round(max(0.0, (time_min - t_first_valid_min) * 60.0)))
+
+
+def load_apical_line_series_for_movie(
+    work_dir: str | os.PathLike[str],
+) -> tuple[np.ndarray, np.ndarray, float] | None:
+    """
+    Return ``(time_min_series, apical_px_series, movie_time_interval_sec)`` for
+    overlaying the apical border on acquisition movies, or None if unavailable.
+
+    Uses the same time axis as ``mark_delta_on_trimmed_movie`` (prefers
+    ``time_abs_min`` when present in output.csv).
+    """
+    wd = os.fspath(work_dir)
+    try:
+        cfg = load_config(wd)
+        dt_min_kymo = cfg["kymograph_time_interval_sec"] / 60.0
+        gs = load_geometry_timeseries_csv(wd, dt_min_kymo)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    geom_time = gs["time_min"]
+    ta = gs.get("time_abs_min")
+    if ta is not None and np.any(np.isfinite(ta)):
+        geom_time = ta
+    ap = gs["apical_px"]
+    valid = np.isfinite(geom_time) & np.isfinite(ap)
+    if not np.any(valid):
+        return None
+    return (
+        np.asarray(geom_time[valid], dtype=float),
+        np.asarray(ap[valid], dtype=float),
+        float(cfg["movie_time_interval_sec"]),
+    )
+
+
 def compute_milestones(time_min, front_px, apical_px, final_px, movie_dt_sec):
     """
     Compute 10% milestones for cellularization progress.
@@ -323,7 +526,23 @@ def compute_milestones(time_min, front_px, apical_px, final_px, movie_dt_sec):
     return milestones
 
 
-def mark_delta_on_trimmed_movie(work_dir, cfg, spline_time_min, spline_front_px, movie=None):
+def mark_delta_on_trimmed_movie(
+    work_dir,
+    cfg,
+    spline_time_min,
+    spline_front_px,
+    movie=None,
+    *,
+    kymograph_brightness: float | None = None,
+    show_apical_line: bool = False,
+    apical_line_rgb: tuple[int, int, int] = (255, 255, 0),
+    output_mp4_path: str | None = None,
+    mp4_fps: float | None = None,
+    mp4_crf: int | None = None,
+    show_timestamp: bool = False,
+    timestamp_rgb: tuple[int, int, int] = (255, 255, 255),
+    timestamp_size_px: int = 8,
+):
     """
     Encode Cellularization_front_markers.mp4 with front markers on each frame.
 
@@ -336,6 +555,27 @@ def mark_delta_on_trimmed_movie(work_dir, cfg, spline_time_min, spline_front_px,
     movie : np.ndarray or None
         Pre-loaded acquisition movie [T, Y, X].  When supplied the TIFF is not
         re-read from disk, avoiding a redundant I/O round-trip.
+    kymograph_brightness : float or None
+        If None, use ``cfg['kymograph_brightness']`` (from config.yaml).
+    show_apical_line : bool
+        When True, draw a dashed horizontal line at ``apical_px_raw`` from output.csv.
+    apical_line_rgb : tuple[int, int, int]
+        Line color (8-bit RGB), default yellow like kymograph scatter.
+    output_mp4_path : str or None
+        Destination MP4 path; default ``results/Cellularization_front_markers.mp4``.
+    mp4_fps : float or None
+        Encoded MP4 frame rate. If None, uses ``EXPORT_MP4_FPS`` (default 10).
+    mp4_crf : int or None
+        libx264 CRF (0–51). If None, uses ``EXPORT_MP4_CRF`` (default 20).
+    show_timestamp : bool
+        When True, burn ``HH:MM:SS`` bottom-left on every frame: ``00:00:00`` until the
+        first valid ``front_raw_px`` time, then elapsed time since that detection,
+        then frozen at the span through the last valid front time (same bounds as
+        the front markers).
+    timestamp_rgb : tuple[int, int, int]
+        8-bit RGB text color for the timestamp.
+    timestamp_size_px : int
+        Nominal text height scale (same sense as preview Size spin).
     """
     movie_time_interval_sec = cfg["movie_time_interval_sec"]
     dt_min_kymo = cfg["kymograph_time_interval_sec"] / 60.0
@@ -347,11 +587,12 @@ def mark_delta_on_trimmed_movie(work_dir, cfg, spline_time_min, spline_front_px,
         raise ValueError(f"Expected 3D movie, got shape {movie.shape}")
     num_frames, height, width = movie.shape
 
-    if np.issubdtype(movie.dtype, np.integer):
-        mx = np.iinfo(movie.dtype).max
-        out_gray = (movie.astype(np.float64) / mx * 65535).astype(np.uint16)
-    else:
-        out_gray = (np.clip(movie.astype(np.float64), 0.0, 1.0) * 65535).astype(np.uint16)
+    kb = (
+        float(kymograph_brightness)
+        if kymograph_brightness is not None
+        else float(cfg.get("kymograph_brightness", 1.0))
+    )
+    out_gray = _autoscale_acquisition_movie_gray_u16(movie, kb)
 
     out = np.stack([out_gray, out_gray, out_gray], axis=-1)  # [T, Y, X, C]
 
@@ -362,6 +603,7 @@ def mark_delta_on_trimmed_movie(work_dir, cfg, spline_time_min, spline_front_px,
     if ta is not None and np.any(np.isfinite(ta)):
         geom_time = ta
     geom_front_raw = gs["front_raw_px"]
+    geom_apical_raw = gs["apical_px"]
 
     # Only valid (non-NaN) entries should be used for interpolation.
     valid = ~np.isnan(geom_front_raw) & np.isfinite(geom_time)
@@ -373,8 +615,20 @@ def mark_delta_on_trimmed_movie(work_dir, cfg, spline_time_min, spline_front_px,
     t_min_lo = float(geom_time_v.min())
     t_min_hi = float(geom_time_v.max())
 
+    valid_ap = ~np.isnan(geom_apical_raw) & np.isfinite(geom_time)
+    geom_time_ap: np.ndarray | None
+    geom_apical_v: np.ndarray | None
+    if np.any(valid_ap):
+        geom_time_ap = np.asarray(geom_time[valid_ap], dtype=float)
+        geom_apical_v = np.asarray(geom_apical_raw[valid_ap], dtype=float)
+    else:
+        geom_time_ap = None
+        geom_apical_v = None
+
+    apical_u16 = _rgb_u8_to_u16(apical_line_rgb)
+
     def draw_arrow_right(rgb_frame, y_center, arrow_size_px, max_val):
-        """Draw a white left-pointing triangle on the right edge."""
+        """Draw an opaque left-pointing triangle on the right edge (RGB = max_val)."""
         h, w, _c = rgb_frame.shape
         y_center = int(round(y_center))
         y_center = max(arrow_size_px, min(h - 1 - arrow_size_px, y_center))
@@ -388,26 +642,10 @@ def mark_delta_on_trimmed_movie(work_dir, cfg, spline_time_min, spline_front_px,
                 if col >= 0:
                     rgb_frame[row, col, :] = max_val
 
-    def draw_red_triangle_right(rgb_frame, y_center, arrow_size_px, red_val):
-        """Draw a red left-pointing triangle on the right edge."""
-        h, w, _c = rgb_frame.shape
-        y_center = int(round(y_center))
-        y_center = max(arrow_size_px, min(h - 1 - arrow_size_px, y_center))
-        for dy in range(-arrow_size_px, arrow_size_px + 1):
-            row = y_center + dy
-            if row < 0 or row >= h:
-                continue
-            half = int(arrow_size_px * (1 - abs(dy) / max(arrow_size_px, 1)))
-            for dx in range(0, half + 1):
-                col = w - 1 - dx
-                if col >= 0:
-                    rgb_frame[row, col, 0] = red_val  # R
-                    rgb_frame[row, col, 1] = 0       # G
-                    rgb_frame[row, col, 2] = 0       # B
-
-    arrow_size_px = max(2, int(height * 0.02))
+    # 1.5× prior size (~3% of frame height); solid uint16 white (not frame-relative).
+    white_u16 = 65535
+    arrow_size_px = max(2, int(round(height * 0.02 * 1.5)))
     for f in range(num_frames):
-        arrow_val = int(np.max(out_gray[f]))
         time_min = f * movie_time_interval_sec / 60.0
         if time_min < t_min_lo:
             continue
@@ -415,45 +653,153 @@ def mark_delta_on_trimmed_movie(work_dir, cfg, spline_time_min, spline_front_px,
             break
 
         front_px = float(np.interp(time_min, geom_time_v, geom_front_v))
-
-        # Tip triangle at the cellularization front (no delta offset)
-        y_tip = max(0, min(height - 1, front_px))
-        draw_red_triangle_right(out[f], y_tip, arrow_size_px, red_val=arrow_val)
-
-        # White arrow at front position (no delta offset)
         y_arrow = max(0, min(height - 1, front_px))
-        draw_arrow_right(out[f], y_arrow, arrow_size_px, max_val=arrow_val)
+        draw_arrow_right(out[f], y_arrow, arrow_size_px, max_val=white_u16)
+
+        if show_apical_line and geom_time_ap is not None and geom_apical_v is not None:
+            ap_y = float(np.interp(time_min, geom_time_ap, geom_apical_v))
+            if np.isfinite(ap_y):
+                _draw_dashed_horizontal_u16(out[f], ap_y, apical_u16)
+
         if (f + 1) % 50 == 0:
             print(f"  Frame {f + 1}/{num_frames}")
 
-    mp4_path = os.path.join(work_dir, "results", FRONT_MARKERS_MP4)
-    fps = 1.0 / float(movie_time_interval_sec)
-    _write_delta_movie_mp4(out, mp4_path, fps)
+    if show_timestamp:
+        mdt = float(movie_time_interval_sec)
+        tsz = int(np.clip(int(timestamp_size_px), 2, 96))
+        tr, tg, tb = (int(timestamp_rgb[0]), int(timestamp_rgb[1]), int(timestamp_rgb[2]))
+        for f2 in range(num_frames):
+            sec = furrow_relative_stamp_seconds(f2, mdt, t_min_lo, t_min_hi)
+            txt = format_experiment_hms(sec)
+            burn_timestamp_on_u16_rgb_frame(
+                out[f2],
+                txt,
+                color_rgb=(tr, tg, tb),
+                size_px=tsz,
+            )
+
+    mp4_path = output_mp4_path or os.path.join(work_dir, "results", FRONT_MARKERS_MP4)
+    os.makedirs(os.path.dirname(mp4_path), exist_ok=True)
+    _write_delta_movie_mp4(out, mp4_path, mp4_fps, mp4_crf)
 
 
-def _write_delta_movie_mp4(out_uint16: np.ndarray, mp4_path: str, fps: float) -> None:
+def _pad_rgb_u8_for_h264_yuv420p(u8: np.ndarray, macro: int = 2) -> np.ndarray:
     """
-    Encode RGB uint16 stack [T, Y, X, 3] to H.264 MP4 using imageio + imageio-ffmpeg
-    (bundled ffmpeg binary; no system ffmpeg required).
+    Pad ``[T, Y, X, 3]`` uint8 so **Y** and **X** are multiples of ``macro`` (default 2).
+
+    ``yuv420p`` requires even width and height. We no longer pad to 16-pixel macroblocks,
+    so at most one row/column is added per axis (avoids a wide ``edge`` strip on narrow frames).
     """
-    if fps <= 0:
-        print(f"Warning: invalid fps {fps} for MP4; skipping {mp4_path}.")
-        return
+    _t, h, w, _c = u8.shape
+    nh = ((h + macro - 1) // macro) * macro
+    nw = ((w + macro - 1) // macro) * macro
+    ph, pw = nh - h, nw - w
+    if ph == 0 and pw == 0:
+        return u8
+    return np.pad(
+        u8,
+        ((0, 0), (0, ph), (0, pw), (0, 0)),
+        mode="edge",
+    )
+
+
+EXPORT_MP4_FPS = 10.0
+EXPORT_MP4_CRF = 20
+
+
+def _write_delta_movie_mp4(
+    out_uint16: np.ndarray,
+    mp4_path: str,
+    fps: float | None = None,
+    crf: int | None = None,
+) -> None:
+    """H.264 (high) + silent AAC MP4 via bundled ffmpeg. ``fps`` / ``crf`` default to module constants."""
+    import imageio_ffmpeg
+
     u8 = np.clip(out_uint16.astype(np.float32) / 257.0, 0.0, 255.0).astype(np.uint8)
-    try:
-        import imageio.v3 as iio
+    u8 = _pad_rgb_u8_for_h264_yuv420p(u8)
+    t, height, width, channels = u8.shape
+    if t < 1:
+        print(f"Warning: no frames for MP4; skipping {mp4_path}.")
+        return
+    if channels != 3:
+        print(f"Warning: expected RGB stack for MP4; skipping {mp4_path}.")
+        return
 
-        iio.imwrite(
-            mp4_path,
-            u8,
-            fps=float(fps),
-            codec="libx264",
-            ffmpeg_params=["-pix_fmt", "yuv420p"],
-            extension=".mp4",
-        )
-        print(f"Saved {FRONT_MARKERS_MP4} to: {mp4_path}")
-    except Exception as exc:
-        print(f"Warning: could not write MP4 ({mp4_path}): {exc}")
+    eff_fps = float(EXPORT_MP4_FPS if fps is None else fps)
+    if eff_fps <= 0:
+        print(f"Warning: invalid MP4 fps {eff_fps}; skipping {mp4_path}.")
+        return
+    eff_crf = int(EXPORT_MP4_CRF if crf is None else crf)
+    eff_crf = max(0, min(51, eff_crf))
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    out_abs = os.path.abspath(mp4_path)
+    parent = os.path.dirname(out_abs)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    cmd = [
+        ffmpeg_exe,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{int(width)}x{int(height)}",
+        "-framerate",
+        str(eff_fps),
+        "-i",
+        "pipe:0",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-c:v",
+        "libx264",
+        "-profile:v",
+        "high",
+        "-pix_fmt",
+        "yuv420p",
+        "-crf",
+        str(eff_crf),
+        "-preset",
+        "medium",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "96k",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        out_abs,
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+    )
+    if proc.stdin is None:
+        raise RuntimeError("ffmpeg subprocess did not provide stdin")
+    try:
+        for i in range(t):
+            proc.stdin.write(np.ascontiguousarray(u8[i]).tobytes())
+    except BrokenPipeError:
+        pass
+    finally:
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+    _, err_b = proc.communicate()
+    if proc.returncode != 0:
+        msg = (err_b or b"").decode(errors="replace").strip() or "ffmpeg exited with error"
+        raise RuntimeError(msg)
+    print(f"Saved {FRONT_MARKERS_MP4} to: {mp4_path}")
 
 
 def _prepare_cellularization_data(folder, cfg, spline_time_min, spline_front_px):

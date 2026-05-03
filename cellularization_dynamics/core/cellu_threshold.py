@@ -17,8 +17,10 @@ from matplotlib.widgets import Button, Slider
 import numpy as np
 import tifffile
 
-from .mask_utils import select_cytoplasm_run
-from .work_state import merge_patch, pipeline_config_flat
+from .apical_manual import apical_px_from_manual_polyline
+from .mask_utils import compute_apical_column_positions
+from .track_tabular import read_apical_manual_tsv
+from .work_state import load_state, merge_patch, pipeline_config_flat
 
 
 def load_px2micron(work_dir):
@@ -134,48 +136,40 @@ def interactive_threshold_and_save_mask(work_dir):
     return mask_path
 
 
-def compute_cytoplasm_size_over_time(folder, config, min_run_length_px=5):
-    track_folder = os.path.join(folder, "track")
-    mask_path = os.path.join(track_folder, "YolkMask.tif")
-    if not os.path.exists(mask_path):
-        raise FileNotFoundError(f"YolkMask.tif not found in: {track_folder}")
+def apical_px_using_saved_islands(work_dir: str, mask_bool: np.ndarray) -> np.ndarray | None:
+    """Mean apical row per column from ``apical_alignment`` island labels, or None if unavailable."""
+    state = load_state(work_dir, migrate_if_needed=True)
+    aa = state.get("apical_alignment") or {}
+    if str(aa.get("mode", "")).strip() != "island":
+        return None
+    raw = aa.get("island_labels") or []
+    labels = [int(x) for x in raw]
+    if not labels:
+        return None
+    apical_px, _ = compute_apical_column_positions(mask_bool, island_labels=labels)
+    return apical_px
 
-    mask = tifffile.imread(mask_path)
-    if mask.ndim > 2:
-        mask = np.squeeze(mask)
-    if mask.ndim != 2:
-        raise ValueError(f"Mask has unexpected shape: {mask.shape}")
 
-    mask_bool = mask > 0
-    depth, num_timepoints = mask_bool.shape
-    px2micron = config["px2micron"]
-
-    heights_px = np.full(num_timepoints, np.nan, dtype=float)
-    apical_px = np.full(num_timepoints, np.nan, dtype=float)
-    basal_px = np.full(num_timepoints, np.nan, dtype=float)
-
-    for t in range(num_timepoints):
-        col = mask_bool[:, t]
-        best_start, best_end = select_cytoplasm_run(col, min_run_length_px)
-        if best_start is None or best_end is None:
-            continue
-
-        apical_px[t] = float(best_start)
-        basal_px[t] = float(best_end)
-        heights_px[t] = float(best_end - best_start)
-
-    col_idx = np.arange(num_timepoints, dtype=float)
-    heights_microns = heights_px * px2micron
-    apical_microns = apical_px * px2micron
-    basal_microns = basal_px * px2micron
-    return (
-        col_idx,
-        heights_px,
-        heights_microns,
-        apical_px,
-        basal_px,
-        apical_microns,
-        basal_microns,
+def apical_px_using_saved_manual(
+    work_dir: str, num_timepoints: int, dt_min: float, px2micron: float
+) -> np.ndarray | None:
+    """Per-column apical row from the saved manual polyline, or None if unavailable."""
+    state = load_state(work_dir, migrate_if_needed=True)
+    aa = state.get("apical_alignment") or {}
+    if str(aa.get("mode", "")).strip() != "manual":
+        return None
+    poly = read_apical_manual_tsv(work_dir)
+    if poly is None:
+        return None
+    time_min_pts, depth_px_pts = poly
+    sigma_um = float(aa.get("manual_sigma_um", 0.5))
+    return apical_px_from_manual_polyline(
+        time_min_pts,
+        depth_px_pts,
+        num_timepoints=int(num_timepoints),
+        dt_min=float(dt_min),
+        sigma_um=sigma_um,
+        px2micron=float(px2micron),
     )
 
 
@@ -192,12 +186,16 @@ def update_apical_height_in_config(folder, apical_px, px2micron):
         print(f"Warning: config.yaml not found at {config_path}; skipping update.")
         return
 
+    saved_state = load_state(folder, migrate_if_needed=True)
+    saved_mode = str((saved_state.get("apical_alignment") or {}).get("mode", "")).strip()
+    run_selection = saved_mode if saved_mode in ("island", "manual") else "island"
+
     merge_patch(
         folder,
         {
             "derived": {
                 "apical_detection": {
-                    "run_selection": "longest",
+                    "run_selection": run_selection,
                     "apical_height_px": mean_apical_px,
                     "apical_height_microns": mean_apical_microns,
                 }
@@ -219,31 +217,73 @@ def main():
         action="store_true",
         help="Skip interactive threshold and reuse existing YolkMask.tif",
     )
-    parser.add_argument("--min-run-length-px", type=int, default=5)
     args = parser.parse_args()
 
     if not os.path.isdir(args.work_dir):
         raise ValueError(f"Work directory does not exist: {args.work_dir}")
 
     config = load_px2micron(args.work_dir)
+    saved_state = load_state(args.work_dir, migrate_if_needed=True)
+    saved_mode = str((saved_state.get("apical_alignment") or {}).get("mode", "")).strip()
+
+    if saved_mode == "manual":
+        print("Saved apical_alignment mode is 'manual'; skipping threshold UI.")
+        track_folder = os.path.join(args.work_dir, "track")
+        kymo_path = os.path.join(track_folder, "Kymograph.tif")
+        if not os.path.exists(kymo_path):
+            raise FileNotFoundError(f"Kymograph.tif not found in: {track_folder}")
+        with tifffile.TiffFile(kymo_path) as tf:
+            kshape = tf.series[0].shape
+        if len(kshape) < 2:
+            raise ValueError(f"Kymograph.tif has unexpected shape: {kshape}")
+        num_timepoints = int(kshape[-1])
+        kymo_cfg = pipeline_config_flat(args.work_dir).get("kymograph") or {}
+        dt_sec = float(
+            kymo_cfg.get(
+                "time_interval_sec",
+                float(kymo_cfg.get("time_interval_min", 1.0)) * 60.0,
+            )
+        )
+        apical_px = apical_px_using_saved_manual(
+            args.work_dir,
+            num_timepoints=num_timepoints,
+            dt_min=dt_sec / 60.0,
+            px2micron=config["px2micron"],
+        )
+        if apical_px is None:
+            print(
+                "Skipping derived.apical_detection: manual apical_alignment is present "
+                "but track/apical_manual.tsv is missing. Re-save from the desktop."
+            )
+        else:
+            update_apical_height_in_config(args.work_dir, apical_px, config["px2micron"])
+        return
 
     if not args.skip_threshold:
         interactive_threshold_and_save_mask(args.work_dir)
     else:
         print("Skipping interactive threshold step (using existing YolkMask.tif).")
 
-    (
-        _col_idx,
-        _heights_px,
-        _heights_microns,
-        apical_px,
-        _basal_px,
-        _apical_microns,
-        _basal_microns,
-    ) = compute_cytoplasm_size_over_time(
-        args.work_dir, config, min_run_length_px=args.min_run_length_px
-    )
-    update_apical_height_in_config(args.work_dir, apical_px, config["px2micron"])
+    track_folder = os.path.join(args.work_dir, "track")
+    mask_path = os.path.join(track_folder, "YolkMask.tif")
+    if not os.path.exists(mask_path):
+        raise FileNotFoundError(f"YolkMask.tif not found in: {track_folder}")
+    mask = tifffile.imread(mask_path)
+    if mask.ndim > 2:
+        mask = np.squeeze(mask)
+    if mask.ndim != 2:
+        raise ValueError(f"Mask has unexpected shape: {mask.shape}")
+    mask_bool = mask > 0
+
+    apical_px = apical_px_using_saved_islands(args.work_dir, mask_bool)
+    if apical_px is None:
+        print(
+            "Skipping derived.apical_detection: no island apical_alignment in config "
+            "(need mode: island and non-empty island_labels). "
+            "Use the desktop to select islands and Save, then re-run this script."
+        )
+    else:
+        update_apical_height_in_config(args.work_dir, apical_px, config["px2micron"])
 
 
 if __name__ == "__main__":

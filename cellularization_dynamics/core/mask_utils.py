@@ -1,23 +1,25 @@
 """
-Shared mask utilities for cytoplasm/apical border detection.
+Shared mask utilities for cytoplasm / apical border detection.
 
-Convention:
-  YolkMask.tif stores 255 where the threshold was satisfied (blue overlay),
-  0 elsewhere.  Cytoplasm is the *non-blue* (mask == 0) region.
-  Within a column, y increases downward, so:
-    run_start  → apical border  (smaller y, closer to top)
-    run_end    → basal border   (larger y,  closer to bottom)
+Two detection modes are supported:
+  - ``island``: vertical center of selected connected components in
+    ``YolkMask.tif`` > 0 (threshold-based).
+  - ``manual``: per-column apical row from a user-drawn polyline, spline-smoothed
+    (see ``apical_manual.apical_px_from_manual_polyline``).
+
+This module owns the per-mode apical-from-mask computation (island) and the
+shared ``apical_px -> alignment`` geometry used by both modes.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Collection, Literal, Tuple
+from typing import Any, Collection, Literal
 
 import numpy as np
 from scipy import ndimage
 
-ApicalMode = Literal["longest_run", "island"]
+ApicalMode = Literal["island", "manual"]
 
 STRAIGHTEN_METADATA_VERSION = 1
 
@@ -34,39 +36,30 @@ class AlignmentResult:
     mode_params: dict[str, Any] = field(default_factory=dict)
 
 
-def build_alignment(
-    mask_bool: np.ndarray,
+def alignment_from_apical_px(
+    apical_px: np.ndarray,
     *,
     px2micron: float,
     mode: ApicalMode,
-    island_labels: Collection[int] | None = None,
-    min_run_length_px: int = 5,
+    mode_params: dict[str, Any] | None = None,
 ) -> AlignmentResult:
     """
-    Compute ref_row, integer shifts, and crop_top from mask and apical mode.
+    Shared ref_row / shifts / crop_top geometry from a per-column apical row.
 
-    Raises ValueError if no column has a valid apical (same contract as straighten).
+    Used by both island and manual modes. Raises ``ValueError`` if no column has
+    a finite apical (same contract as ``straighten``).
     """
-    apical_px, _labels_unused = compute_apical_column_positions(
-        mask_bool,
-        mode=mode,
-        island_labels=island_labels,
-        min_run_length_px=min_run_length_px,
-    )
+    apical_px = np.asarray(apical_px, dtype=float).ravel()
     valid = ~np.isnan(apical_px)
     if not np.any(valid):
-        raise ValueError("No valid apical border detected in YolkMask.tif")
+        raise ValueError("No valid apical border detected")
 
-    _depth, num_timepoints = mask_bool.shape
+    num_timepoints = int(apical_px.size)
     margin_px = int(round(2.0 / max(float(px2micron), 1e-9)))
     ref_row = int(np.nanmin(apical_px[valid])) + margin_px
     shifts = np.zeros(num_timepoints, dtype=int)
     shifts[valid] = (ref_row - apical_px[valid]).astype(int)
     crop_top = max(0, ref_row - margin_px)
-
-    mode_params: dict[str, Any] = {}
-    if mode == "island" and island_labels is not None:
-        mode_params["island_labels"] = sorted(int(x) for x in island_labels)
 
     return AlignmentResult(
         apical_px_by_col=apical_px,
@@ -74,25 +67,40 @@ def build_alignment(
         ref_row=int(ref_row),
         crop_top_px=int(crop_top),
         mode=str(mode),
-        mode_params=mode_params,
+        mode_params=dict(mode_params or {}),
     )
 
 
-def _apical_longest_run(
+def build_alignment(
     mask_bool: np.ndarray,
-    _labels: np.ndarray,
     *,
-    min_run_length_px: int,
-) -> np.ndarray:
-    _, num_timepoints = mask_bool.shape
-    apical_px = np.full(num_timepoints, np.nan, dtype=float)
-    for t in range(num_timepoints):
-        best_start, _ = select_cytoplasm_run(
-            mask_bool[:, t], min_run_length_px=min_run_length_px
+    px2micron: float,
+    mode: ApicalMode,
+    island_labels: Collection[int] | None = None,
+) -> AlignmentResult:
+    """
+    Island-mode alignment: compute apical_px from the yolk mask, then delegate
+    to ``alignment_from_apical_px`` for the shared geometry.
+    """
+    if mode != "island":
+        raise ValueError(
+            f"build_alignment only supports mode='island'; got {mode!r}. "
+            "Manual mode builds apical_px via apical_manual.apical_px_from_manual_polyline "
+            "and calls alignment_from_apical_px directly."
         )
-        if best_start is not None:
-            apical_px[t] = float(best_start)
-    return apical_px
+    apical_px, _labels_unused = compute_apical_column_positions(
+        mask_bool,
+        island_labels=island_labels,
+    )
+    mode_params: dict[str, Any] = {}
+    if island_labels is not None:
+        mode_params["island_labels"] = sorted(int(x) for x in island_labels)
+    return alignment_from_apical_px(
+        apical_px,
+        px2micron=px2micron,
+        mode=mode,
+        mode_params=mode_params,
+    )
 
 
 def _apical_island_center(
@@ -116,9 +124,7 @@ def _apical_island_center(
 def compute_apical_column_positions(
     mask_bool: np.ndarray,
     *,
-    mode: ApicalMode,
     island_labels: Collection[int] | None = None,
-    min_run_length_px: int = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Per-timepoint apical reference row and connected-component labels of the mask.
@@ -126,65 +132,14 @@ def compute_apical_column_positions(
     ``mask_bool`` is True where the yolk/threshold region is masked (same as
     ``YolkMask.tif`` > 0). ``labels`` are the yolk island IDs from ``ndimage.label``.
 
-    For ``mode == "island"``, uses the vertical center (mean row) of selected labels
-    within each time column. Empty ``island_labels`` yields all-NaN apical.
-
-    Internal modes dispatch via ``_apical_*`` helpers for extensibility.
+    Uses the vertical center (mean row) of selected labels within each time column.
+    Empty ``island_labels`` yields all-NaN apical.
     """
     labels, _ = ndimage.label(mask_bool.astype(np.uint8))
-
-    if mode == "island":
-        apical_px = _apical_island_center(
-            mask_bool, labels, island_labels=island_labels
-        )
-    else:
-        apical_px = _apical_longest_run(
-            mask_bool, labels, min_run_length_px=min_run_length_px
-        )
-
+    apical_px = _apical_island_center(
+        mask_bool, labels, island_labels=island_labels
+    )
     return apical_px, labels
-
-
-def select_cytoplasm_run(
-    col: np.ndarray, min_run_length_px: int = 5
-) -> Tuple[int | None, int | None]:
-    """
-    Find the apical (run_start) and basal (run_end) borders of the longest
-    contiguous non-blue (mask == 0) segment in a single mask column.
-
-    Parameters
-    ----------
-    col : 1-D boolean array
-        One column of the binary mask (True = blue/masked, False = cytoplasm).
-    min_run_length_px : int
-        Minimum run length to consider.
-
-    Returns
-    -------
-    (run_start, run_end) in pixel coordinates, or (None, None) if nothing found.
-    """
-    cytoplasm = ~np.asarray(col, dtype=bool)
-
-    # Pad with False on both ends so every run has both a rising and falling edge
-    padded = np.empty(len(cytoplasm) + 2, dtype=np.int8)
-    padded[0] = 0
-    padded[1:-1] = cytoplasm.view(np.int8)
-    padded[-1] = 0
-
-    diff = np.diff(padded)
-    starts = np.where(diff == 1)[0]   # False→True transitions (run starts)
-    ends = np.where(diff == -1)[0] - 1  # True→False transitions (run ends)
-
-    if starts.size == 0:
-        return None, None
-
-    lengths = ends - starts + 1
-    valid = lengths >= min_run_length_px
-    if not np.any(valid):
-        return None, None
-
-    best = int(np.argmax(lengths * valid))
-    return int(starts[best]), int(ends[best])
 
 
 def serialize_apical_px_for_yaml(apical_px: np.ndarray) -> list[float | None]:

@@ -15,9 +15,10 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QFileDialog,
     QSizePolicy,
-    QComboBox,
     QGroupBox,
     QSpinBox,
+    QComboBox,
+    QDoubleSpinBox,
 )
 
 from .services.analyze_worker import AnalyzeWorker, GenerateFigureWorker
@@ -35,14 +36,25 @@ from .services.metadata_reader import read_imagej_params
 from .services.io import atomic_write_tiff
 from .services.output_layout import work_dir_for, ensure_work_tree
 from .services.pipeline_adapter import (
-    compute_cytoplasm_size_over_time,
+    apical_px_from_manual_polyline,
+    compute_apical_column_positions,
     update_apical_height_in_config,
 )
 from cellularization_dynamics.core.annotation_source import (
     build_apical_alignment_v2,
     raw_clicks_to_time_depth,
 )
-from .services.sample_state import AcquisitionParams, SampleState
+from cellularization_dynamics.core.track_tabular import (
+    apical_manual_tsv_path,
+    write_apical_manual_tsv,
+)
+from .services.sample_state import (
+    APICAL_MODE_ISLAND,
+    APICAL_MODE_MANUAL,
+    DEFAULT_MANUAL_SIGMA_UM,
+    AcquisitionParams,
+    SampleState,
+)
 from .services.session_restore import has_restorable_session, restore_interactive_session
 from .widgets.defaults_panel import DefaultsPanel
 from .widgets.drop_list import DropListWidget
@@ -102,10 +114,6 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(4)
 
-        apical_tip = (
-            "Longest run: apical from the longest cytoplasm segment per column.\n"
-            "Island: click masked islands on the left kymograph; column-wise vertical center = apex."
-        )
         kymograph_width_pct_tip = (
             "When Analyze builds the vertical kymograph, each frame is collapsed along x by "
             "averaging intensity over this percentage of the movie width, centered on the image.\n\n"
@@ -116,19 +124,51 @@ class MainWindow(QMainWindow):
         apical_inner = QVBoxLayout(apical_box)
         apical_inner.setContentsMargins(6, 8, 6, 6)
         apical_inner.setSpacing(4)
-        apical_row = QHBoxLayout()
-        apical_row.setSpacing(6)
-        self.apical_mode_label = QLabel("Method:")
-        self.apical_mode_label.setToolTip(apical_tip)
+
+        mode_tip = (
+            "Island: click masked threshold islands on the left kymograph; "
+            "the column-wise center of the selection defines the apical border.\n"
+            "Manual: draw a polyline directly on the left kymograph to define "
+            "the apical border; the curve is spline-smoothed before straightening."
+        )
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(6)
+        self.apical_mode_label = QLabel("Apical mode")
+        self.apical_mode_label.setToolTip(mode_tip)
         self.apical_mode_combo = QComboBox()
-        self.apical_mode_combo.setToolTip(apical_tip)
-        self.apical_mode_combo.addItem("Island (click to select)")
-        self.apical_mode_combo.addItem("Longest cytoplasm run")
+        self.apical_mode_combo.setToolTip(mode_tip)
+        self.apical_mode_combo.addItem("Island (click to select)", APICAL_MODE_ISLAND)
+        self.apical_mode_combo.addItem("Manual (draw polyline)", APICAL_MODE_MANUAL)
         self.apical_mode_combo.setCurrentIndex(0)
         self.apical_mode_combo.currentIndexChanged.connect(self._on_apical_mode_changed)
-        apical_row.addWidget(self.apical_mode_label, 0)
-        apical_row.addWidget(self.apical_mode_combo, 1)
-        apical_inner.addLayout(apical_row)
+        mode_row.addWidget(self.apical_mode_label, 0)
+        mode_row.addWidget(self.apical_mode_combo, 1)
+        apical_inner.addLayout(mode_row)
+
+        sigma_tip = (
+            "Smoothing for the manually drawn apical polyline, expressed as the "
+            "expected click noise in microns. Larger values give a smoother apical "
+            "curve at the cost of tracking individual clicks less closely."
+        )
+        self.sigma_row_widget = QWidget()
+        sigma_row = QHBoxLayout(self.sigma_row_widget)
+        sigma_row.setContentsMargins(0, 0, 0, 0)
+        sigma_row.setSpacing(6)
+        self.apical_sigma_label = QLabel("Apical smoothing")
+        self.apical_sigma_label.setToolTip(sigma_tip)
+        self.apical_sigma_spin = QDoubleSpinBox()
+        self.apical_sigma_spin.setRange(0.0, 5.0)
+        self.apical_sigma_spin.setSingleStep(0.1)
+        self.apical_sigma_spin.setDecimals(2)
+        self.apical_sigma_spin.setValue(float(DEFAULT_MANUAL_SIGMA_UM))
+        self.apical_sigma_spin.setSuffix(" µm")
+        self.apical_sigma_spin.setToolTip(sigma_tip)
+        self.apical_sigma_spin.valueChanged.connect(self._on_apical_sigma_changed)
+        sigma_row.addWidget(self.apical_sigma_label, 0)
+        sigma_row.addWidget(self.apical_sigma_spin, 1)
+        self.sigma_row_widget.setVisible(False)
+        apical_inner.addWidget(self.sigma_row_widget)
+
         pct_row = QHBoxLayout()
         pct_row.setSpacing(6)
         self.kymograph_width_label = QLabel("Width % for kymograph")
@@ -197,6 +237,10 @@ class MainWindow(QMainWindow):
         self.threshold_panel.threshold_changed.connect(self._on_threshold_changed)
         self.threshold_panel.brightness_changed.connect(self._on_brightness_changed)
         self.threshold_panel.island_clicked.connect(self._on_island_clicked)
+        self.threshold_panel.manual_point_added.connect(self._on_manual_point_added)
+        self.threshold_panel.manual_point_moved.connect(self._on_manual_point_moved)
+        self.threshold_panel.manual_undo_requested.connect(self._on_manual_undo)
+        self.threshold_panel.manual_clear_requested.connect(self._on_manual_clear)
         self.front_panel.raw_point_added.connect(self._on_raw_point_added)
         self.front_panel.raw_point_moved.connect(self._on_raw_point_moved)
         self.front_panel.undo_requested.connect(self._on_undo)
@@ -241,7 +285,6 @@ class MainWindow(QMainWindow):
             self.samples[path] = state
         else:
             self.samples[path].acq_params = AcquisitionParams(**params)
-        self._sync_apical_mode_combo(self.samples[path].use_island_mode)
         pct = read_averaging_width_pct_for_ui(self.samples[path].work_dir)
         self.kymograph_width_spin.blockSignals(True)
         self.kymograph_width_spin.setValue(pct)
@@ -319,14 +362,25 @@ class MainWindow(QMainWindow):
         )
         self.threshold_panel.brightness_slider.blockSignals(False)
 
+        self._sync_apical_mode_widgets(state)
+        self.threshold_panel.set_mode(state.apical_mode)
+
+        threshold_value = state.threshold if state.threshold is not None else 0.0
         self.threshold_panel.set_data(
             state.kymograph,
-            state.threshold,
+            threshold_value,
             state.mask,
             state.acq_params.movie_time_interval_sec,
-            state.use_island_mode,
         )
-        self.threshold_panel.set_selected_island_mask(state.selected_island_mask())
+        if state.apical_mode == APICAL_MODE_ISLAND:
+            self.threshold_panel.set_selected_island_mask(state.selected_island_mask())
+            self.threshold_panel.set_manual_curves(np.empty((0, 2), dtype=float), None)
+        else:
+            self.threshold_panel.set_selected_island_mask(None)
+            self.threshold_panel.set_manual_curves(
+                self._manual_points_display(state),
+                self._manual_curve_display(state),
+            )
 
         crop_top = max(0, state.ref_row - int(round(3.0 / max(state.acq_params.px2micron, 1e-9))))
         points_display = state.display_points(
@@ -352,12 +406,75 @@ class MainWindow(QMainWindow):
         state = self._current_state()
         if state is None:
             return
+        if state.apical_mode != APICAL_MODE_ISLAND:
+            return
         state.set_threshold(threshold)
-        if state.use_island_mode:
-            self.status_label.setText("Island mode: threshold changed, reselect islands")
-        else:
-            self.status_label.setText("Unsaved changes")
+        self.status_label.setText("Threshold changed — reselect islands on the kymograph")
         self.generate_btn.setEnabled(False)
+
+    def _sync_apical_mode_widgets(self, state: SampleState) -> None:
+        """Sync the apical-mode combo and sigma spinbox to the SampleState values."""
+        target_idx = 0 if state.apical_mode == APICAL_MODE_ISLAND else 1
+        self.apical_mode_combo.blockSignals(True)
+        if self.apical_mode_combo.currentIndex() != target_idx:
+            self.apical_mode_combo.setCurrentIndex(target_idx)
+        self.apical_mode_combo.blockSignals(False)
+
+        self.apical_sigma_spin.blockSignals(True)
+        self.apical_sigma_spin.setValue(float(state.manual_sigma_um))
+        self.apical_sigma_spin.blockSignals(False)
+
+        self.sigma_row_widget.setVisible(state.apical_mode == APICAL_MODE_MANUAL)
+
+    def _manual_points_display(self, state: SampleState) -> np.ndarray:
+        if not state.manual_polyline_raw or state.kymograph is None:
+            return np.empty((0, 2), dtype=float)
+        dt_min = max(state.acq_params.movie_time_interval_sec / 60.0, 1e-12)
+        arr = np.asarray(state.manual_polyline_raw, dtype=float)
+        out = arr.copy()
+        out[:, 0] = arr[:, 0] * dt_min
+        return out
+
+    def _manual_curve_display(self, state: SampleState) -> np.ndarray | None:
+        if state.apical_px_by_col is None or state.kymograph is None:
+            return None
+        ap = np.asarray(state.apical_px_by_col, dtype=float).ravel()
+        valid = np.isfinite(ap)
+        if not np.any(valid):
+            return None
+        dt_min = max(state.acq_params.movie_time_interval_sec / 60.0, 1e-12)
+        cols = np.arange(ap.size, dtype=float)[valid]
+        times = cols * dt_min
+        depths = ap[valid]
+        return np.column_stack([times, depths])
+
+    def _on_apical_mode_changed(self, _index: int):
+        state = self._current_state()
+        mode = self.apical_mode_combo.currentData()
+        if mode is None:
+            return
+        if state is None:
+            self.sigma_row_widget.setVisible(mode == APICAL_MODE_MANUAL)
+            return
+        state.set_apical_mode(str(mode))
+        self.sigma_row_widget.setVisible(state.apical_mode == APICAL_MODE_MANUAL)
+        if state.apical_mode == APICAL_MODE_MANUAL:
+            self.status_label.setText(
+                "Manual mode: click the left kymograph to draw the apical polyline "
+                "(Backspace undo, Escape clear)"
+            )
+        else:
+            self.status_label.setText("Island mode: click masked islands to select")
+        self.generate_btn.setEnabled(False)
+
+    def _on_apical_sigma_changed(self, value: float):
+        state = self._current_state()
+        if state is None:
+            return
+        state.set_manual_sigma_um(float(value))
+        if state.apical_mode == APICAL_MODE_MANUAL:
+            self.status_label.setText("Unsaved changes")
+            self.generate_btn.setEnabled(False)
 
     def _on_brightness_changed(self, brightness: float):
         self.front_panel.set_brightness(brightness)
@@ -366,23 +483,6 @@ class MainWindow(QMainWindow):
             merge_visualization_fields(
                 state.work_dir, kymograph_brightness=float(brightness)
             )
-
-    def _sync_apical_mode_combo(self, use_island: bool) -> None:
-        self.apical_mode_combo.blockSignals(True)
-        self.apical_mode_combo.setCurrentIndex(0 if use_island else 1)
-        self.apical_mode_combo.blockSignals(False)
-
-    def _on_apical_mode_changed(self, _index: int) -> None:
-        state = self._current_state()
-        if state is None:
-            return
-        enabled = self.apical_mode_combo.currentIndex() == 0
-        state.set_use_island_mode(enabled)
-        self.generate_btn.setEnabled(False)
-        if enabled:
-            self.status_label.setText("Island mode: click threshold islands on left kymograph")
-        else:
-            self.status_label.setText("Unsaved changes")
 
     def _on_averaging_width_pct_changed(self, value: int) -> None:
         state = self._current_state()
@@ -395,13 +495,49 @@ class MainWindow(QMainWindow):
         state = self._current_state()
         if state is None:
             return
+        if state.apical_mode != APICAL_MODE_ISLAND:
+            return
         selected = state.select_island_at(x, y)
         if selected:
             self.status_label.setText("Unsaved changes")
             self.generate_btn.setEnabled(False)
         else:
-            self.status_label.setText("Island mode: selection reset (click islands to select)")
+            self.status_label.setText("Selection reset — click masked islands to select")
             self.generate_btn.setEnabled(False)
+
+    def _on_manual_point_added(self, x: float, y: float):
+        state = self._current_state()
+        if state is None or state.apical_mode != APICAL_MODE_MANUAL:
+            return
+        state.add_manual_point_raw(x, y)
+        self.status_label.setText("Unsaved changes")
+        self.generate_btn.setEnabled(False)
+
+    def _on_manual_point_moved(self, index: int, x: float, y: float, committed: bool):
+        state = self._current_state()
+        if state is None or state.apical_mode != APICAL_MODE_MANUAL:
+            return
+        state.update_manual_point_raw(index, x, y, emit_state_changed=committed)
+        self.status_label.setText("Unsaved changes")
+        self.generate_btn.setEnabled(False)
+        if not committed:
+            # Refresh the panel's polyline markers during drag without a full state emit.
+            self.threshold_panel.set_manual_curves(
+                self._manual_points_display(state),
+                self._manual_curve_display(state),
+            )
+
+    def _on_manual_undo(self):
+        state = self._current_state()
+        if state is None or state.apical_mode != APICAL_MODE_MANUAL:
+            return
+        state.undo_manual_point()
+
+    def _on_manual_clear(self):
+        state = self._current_state()
+        if state is None or state.apical_mode != APICAL_MODE_MANUAL:
+            return
+        state.clear_manual_points()
 
     def _on_raw_point_added(self, x: float, y: float):
         state = self._current_state()
@@ -484,11 +620,9 @@ class MainWindow(QMainWindow):
             state.init_threshold_from_percentile_and_recompute()
         if self.current_path == path:
             if restored:
-                self._sync_apical_mode_combo(state.use_island_mode)
                 self.status_label.setText(self._compose_kymograph_width_status(note))
                 self.generate_btn.setEnabled(True)
             elif note:
-                self._sync_apical_mode_combo(state.use_island_mode)
                 self.status_label.setText(self._compose_kymograph_width_status(note))
                 self.generate_btn.setEnabled(False)
             else:
@@ -505,8 +639,19 @@ class MainWindow(QMainWindow):
 
     def save_current(self):
         state = self._current_state()
-        if state is None or state.kymograph is None or state.mask is None:
+        if state is None or state.kymograph is None:
             QMessageBox.warning(self, "Nothing to save", "Analyze first.")
+            return
+
+        if state.apical_mode == APICAL_MODE_ISLAND and state.mask is None:
+            QMessageBox.warning(self, "Nothing to save", "Analyze first.")
+            return
+        if state.apical_mode == APICAL_MODE_MANUAL and len(state.manual_polyline_raw) < 2:
+            QMessageBox.warning(
+                self,
+                "Need points",
+                "Draw at least two manual apical points before saving.",
+            )
             return
 
         if len(state.front_points_raw) < 2:
@@ -516,8 +661,17 @@ class MainWindow(QMainWindow):
         track = state.work_dir / "track"
         ensure_work_tree(state.work_dir)
 
-        mask_u8 = state.mask.astype(np.uint8) * 255
-        atomic_write_tiff(track / "YolkMask.tif", mask_u8)
+        if state.apical_mode == APICAL_MODE_ISLAND:
+            mask_u8 = state.mask.astype(np.uint8) * 255
+            atomic_write_tiff(track / "YolkMask.tif", mask_u8)
+        else:
+            # Manual mode does not use a threshold mask; remove any stale YolkMask.tif
+            # so the folder consistently reflects the saved apical mode.
+            stale_mask = track / "YolkMask.tif"
+            try:
+                stale_mask.unlink()
+            except FileNotFoundError:
+                pass
 
         points_raw = np.asarray(state.front_points_raw, dtype=float)
         time_interval_min = state.acq_params.movie_time_interval_sec / 60.0
@@ -527,22 +681,51 @@ class MainWindow(QMainWindow):
             state.kymograph.shape[1] if state.kymograph is not None else 0,
             time_interval_min,
         )
+
+        threshold_for_restore = float(state.threshold) if state.threshold is not None else 0.0
         alignment = build_apical_alignment_v2(
-            mode="island" if state.use_island_mode else "longest_run",
+            mode=state.apical_mode,
             island_labels=sorted(state.selected_island_labels)
-            if state.use_island_mode
+            if state.apical_mode == APICAL_MODE_ISLAND
             else [],
-            threshold=float(state.threshold),
+            threshold=threshold_for_restore,
             kymograph_shape=state.kymograph.shape,
             movie_time_interval_sec=float(state.acq_params.movie_time_interval_sec),
+            manual_sigma_um=float(state.manual_sigma_um)
+            if state.apical_mode == APICAL_MODE_MANUAL
+            else None,
         )
         save_apical_alignment(state.work_dir, alignment, time_min, depth_px)
 
-        _, _, _, apical_px, _, _, _ = compute_cytoplasm_size_over_time(
-            str(state.work_dir),
-            {"px2micron": state.acq_params.px2micron},
-            min_run_length_px=5,
-        )
+        if state.apical_mode == APICAL_MODE_MANUAL:
+            manual_arr = np.asarray(state.manual_polyline_raw, dtype=float)
+            manual_t_min = manual_arr[:, 0] * time_interval_min
+            manual_d_raw = manual_arr[:, 1]
+            write_apical_manual_tsv(state.work_dir, manual_t_min, manual_d_raw)
+        else:
+            # Clean up a stale manual polyline TSV if the user just saved island mode.
+            stale_manual = apical_manual_tsv_path(state.work_dir)
+            try:
+                stale_manual.unlink()
+            except FileNotFoundError:
+                pass
+
+        if state.apical_mode == APICAL_MODE_ISLAND:
+            apical_px, _ = compute_apical_column_positions(
+                state.mask,
+                island_labels=state.selected_island_labels,
+            )
+        else:
+            dt_min = max(state.acq_params.movie_time_interval_sec / 60.0, 1e-12)
+            manual_arr = np.asarray(state.manual_polyline_raw, dtype=float)
+            apical_px = apical_px_from_manual_polyline(
+                manual_arr[:, 0] * dt_min,
+                manual_arr[:, 1],
+                num_timepoints=int(state.kymograph.shape[1]),
+                dt_min=dt_min,
+                sigma_um=float(state.manual_sigma_um),
+                px2micron=float(state.acq_params.px2micron),
+            )
         update_apical_height_in_config(str(state.work_dir), apical_px, state.acq_params.px2micron)
 
         merge_kymograph_fields(state.work_dir, averaging_width_pct=self.kymograph_width_spin.value())
@@ -592,7 +775,7 @@ class MainWindow(QMainWindow):
             return
         if self._movie_preview is None:
             self._movie_preview = MoviePreviewDialog(self)
-        self._movie_preview.set_source(mp4)
+        self._movie_preview.set_source(mp4, state.work_dir)
         self._movie_preview.show()
         self._movie_preview.raise_()
         self._movie_preview.activateWindow()

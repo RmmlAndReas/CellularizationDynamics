@@ -5,3 +5,4 @@ scipy
 matplotlib
 opencv-python
 pyyaml
+imageio-ffmpeg>=0.4.9

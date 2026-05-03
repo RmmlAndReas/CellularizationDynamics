@@ -34,6 +34,7 @@ cellularization_dynamics/app/widgets/result_panel.py
 cellularization_dynamics/app/widgets/threshold_panel.py
 cellularization_dynamics/core/__init__.py
 cellularization_dynamics/core/annotation_source.py
+cellularization_dynamics/core/apical_manual.py
 cellularization_dynamics/core/cellu_front_annotation.py
 cellularization_dynamics/core/cellu_threshold.py
 cellularization_dynamics/core/cellularization_paths.py

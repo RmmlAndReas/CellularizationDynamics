@@ -65,59 +65,92 @@ def _load_config_and_meta(folder: str) -> Tuple[float, int, float, dict]:
     return px2micron, ref_row, dt_sec, meta
 
 
-def _apical_px_per_column(mask_bool: np.ndarray, meta: dict) -> np.ndarray:
-    """Apical row in raw kymograph/movie space; matches straightening."""
-    num_timepoints = int(mask_bool.shape[1])
+def _apical_px_from_meta(meta: dict, num_timepoints: int) -> np.ndarray:
+    """Apical row in raw kymograph/movie space from the straightening TSV."""
     raw_list = meta.get("apical_px_by_col")
-    if raw_list is not None and len(raw_list) == num_timepoints:
-        return np.array(
-            [np.nan if x is None else float(x) for x in raw_list],
-            dtype=float,
+    if raw_list is None or len(raw_list) != num_timepoints:
+        raise ValueError(
+            "straightening metadata is missing apical_px_by_col; "
+            "re-run straighten_kymograph for this sample."
         )
-
-    mode = str(meta.get("apical_mode", "longest_run")).strip()
-    if mode not in ("longest_run", "island"):
-        mode = "longest_run"
-    il = meta.get("island_labels") or []
-    island_labels = il if mode == "island" else None
-    apical_px, _ = compute_apical_column_positions(
-        mask_bool,
-        mode=mode,  # type: ignore[arg-type]
-        island_labels=island_labels,
-        min_run_length_px=5,
+    return np.array(
+        [np.nan if x is None else float(x) for x in raw_list],
+        dtype=float,
     )
-    return apical_px
 
 
-def export_geometry_timeseries(folder: str) -> str:
-    track = os.path.join(folder, "track")
-    mask_path = os.path.join(track, "YolkMask.tif")
-    spline_path = os.path.join(track, "VerticalKymoCelluSelection_spline.tsv")
-    out_path = os.path.join(folder, "output.csv")
-
+def _apical_px_island_fallback(
+    folder: str, meta: dict, num_timepoints: int
+) -> np.ndarray:
+    """Recompute island apical_px from YolkMask.tif + saved island labels."""
+    mask_path = os.path.join(folder, "track", "YolkMask.tif")
     if not os.path.exists(mask_path):
         raise FileNotFoundError(f"YolkMask.tif not found: {mask_path}")
-    if not os.path.exists(spline_path):
-        raise FileNotFoundError(f"VerticalKymoCelluSelection_spline.tsv not found: {spline_path}")
-
-    px2micron, ref_row, kymo_dt_sec, meta = _load_config_and_meta(folder)
-    dt_min = kymo_dt_sec / 60.0
-
     mask = tifffile.imread(mask_path)
     if mask.ndim > 2:
         mask = np.squeeze(mask)
     if mask.ndim != 2:
         raise ValueError(f"YolkMask.tif has unexpected shape: {mask.shape}")
     mask_bool = mask > 0
-    _depth, num_timepoints = mask_bool.shape
+    if mask_bool.shape[1] != num_timepoints:
+        raise ValueError(
+            f"YolkMask.tif columns {mask_bool.shape[1]} != kymograph columns {num_timepoints}"
+        )
+    il = meta.get("island_labels") or []
+    island_labels = [int(x) for x in il]
+    if not island_labels:
+        raise ValueError(
+            "straightening metadata lacks island_labels; cannot recompute apical_px_by_col."
+        )
+    apical_px, _ = compute_apical_column_positions(
+        mask_bool,
+        island_labels=island_labels,
+    )
+    return apical_px
+
+
+def export_geometry_timeseries(folder: str) -> str:
+    track = os.path.join(folder, "track")
+    kymo_path = os.path.join(track, "Kymograph.tif")
+    spline_path = os.path.join(track, "VerticalKymoCelluSelection_spline.tsv")
+    out_path = os.path.join(folder, "output.csv")
+
+    if not os.path.exists(kymo_path):
+        raise FileNotFoundError(f"Kymograph.tif not found: {kymo_path}")
+    if not os.path.exists(spline_path):
+        raise FileNotFoundError(f"VerticalKymoCelluSelection_spline.tsv not found: {spline_path}")
+
+    px2micron, ref_row, kymo_dt_sec, meta = _load_config_and_meta(folder)
+    dt_min = kymo_dt_sec / 60.0
+
+    with tifffile.TiffFile(kymo_path) as tf:
+        kymo_shape = tf.series[0].shape
+    if len(kymo_shape) < 2:
+        raise ValueError(f"Kymograph.tif has unexpected shape: {kymo_shape}")
+    num_timepoints = int(kymo_shape[-1])
+
+    mode = str(meta.get("apical_mode", "island")).strip()
+    if mode == "longest_run":
+        raise ValueError(
+            "straightening.apical_mode 'longest_run' is no longer supported. "
+            "Re-save apical alignment from the desktop."
+        )
+    if mode not in ("island", "manual"):
+        raise ValueError(f"Unsupported straightening apical_mode: {mode!r}")
 
     shifts = np.asarray(meta["shifts"], dtype=int)
     if shifts.size != num_timepoints:
         raise ValueError(
-            f"straighten_metadata shifts length {shifts.size} != mask columns {num_timepoints}"
+            f"straighten_metadata shifts length {shifts.size} != kymograph columns {num_timepoints}"
         )
 
-    apical_px = _apical_px_per_column(mask_bool, meta)
+    try:
+        apical_px = _apical_px_from_meta(meta, num_timepoints)
+    except ValueError:
+        if mode == "island":
+            apical_px = _apical_px_island_fallback(folder, meta, num_timepoints)
+        else:
+            raise
 
     col_idx = np.arange(num_timepoints, dtype=int)
 

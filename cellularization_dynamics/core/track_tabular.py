@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 APICAL_FRONT_TSV = "apical_front.tsv"
+APICAL_MANUAL_TSV = "apical_manual.tsv"
 STRAIGHTENING_COLUMNS_TSV = "straightening_columns.tsv"
 
 
@@ -19,6 +20,10 @@ def _track_dir(work_dir: str | Path) -> Path:
 
 def apical_front_tsv_path(work_dir: str | Path) -> Path:
     return _track_dir(work_dir) / APICAL_FRONT_TSV
+
+
+def apical_manual_tsv_path(work_dir: str | Path) -> Path:
+    return _track_dir(work_dir) / APICAL_MANUAL_TSV
 
 
 def straightening_columns_tsv_path(work_dir: str | Path) -> Path:
@@ -58,6 +63,42 @@ def write_apical_front_tsv(
 
 def read_apical_front_tsv(work_dir: str | Path) -> tuple[np.ndarray, np.ndarray] | None:
     path = apical_front_tsv_path(work_dir)
+    if not path.is_file():
+        return None
+    try:
+        data = np.loadtxt(path, delimiter="\t", skiprows=1)
+    except OSError:
+        return None
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    if data.shape[0] < 2 or data.shape[1] < 2:
+        return None
+    time_min = data[:, 0].astype(float)
+    depth_px = data[:, 1].astype(float)
+    order = np.argsort(time_min)
+    return time_min[order].copy(), depth_px[order].copy()
+
+
+def write_apical_manual_tsv(
+    work_dir: str | Path,
+    time_min: np.ndarray,
+    depth_px_raw: np.ndarray,
+) -> Path:
+    """Write the user-drawn manual apical polyline in raw-kymograph pixel depth."""
+    path = apical_manual_tsv_path(work_dir)
+    t = np.asarray(time_min, dtype=float).ravel()
+    d = np.asarray(depth_px_raw, dtype=float).ravel()
+    if t.size != d.size:
+        raise ValueError("time_min and depth_px_raw must have the same length")
+    lines = ["time_min\tdepth_px_raw\n"]
+    for ti, di in zip(t, d):
+        lines.append(f"{float(ti):.6f}\t{float(di):.6f}\n")
+    _atomic_write_bytes(path, "".join(lines).encode("utf-8"))
+    return path
+
+
+def read_apical_manual_tsv(work_dir: str | Path) -> tuple[np.ndarray, np.ndarray] | None:
+    path = apical_manual_tsv_path(work_dir)
     if not path.is_file():
         return None
     try:

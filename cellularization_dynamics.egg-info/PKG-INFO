@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: cellularization-dynamics
-Version: 0.2.0
+Version: 0.2.3
 Summary: Desktop GUI for cellularization annotation and output generation
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
@@ -11,37 +11,37 @@ Requires-Dist: scipy
 Requires-Dist: matplotlib
 Requires-Dist: opencv-python
 Requires-Dist: pyyaml
+Requires-Dist: imageio-ffmpeg>=0.4.9
 
 # Cellularization Dynamics
 
-Desktop app for cellularization annotation and output generation. The repository is **GUI-first**: run the GUI via **`cdynamics`** or **`python -m cellularization_dynamics`**; batch/Snakemake workflows are not used.
+Desktop app for cellularization annotation and output generation. The repository is **GUI-first**: run the GUI via `**cdynamics`** or `**python -m cellularization_dynamics**`; batch/Snakemake workflows are not used.
 
 ## Install
 
-### pip (recommended for end users)
+### Quick install with conda (three steps)
 
-With your conda environment activated:
+Use a **dedicated** conda environment so dependencies stay isolated. The examples below name it `**cdynamics`**; you can pick any name.
 
-```bash
-pip install /path/to/CellularizationDynamics
-```
-
-Or from a clone of this repository (editable install while developing):
+**1. Create a new environment** (Python 3.10 or newer is required):
 
 ```bash
-pip install -e .
+conda create -n cdynamics python=3.12 -y
 ```
 
-This installs the **`cellularization_dynamics`** package (with nested `app` and `core` modules) and registers the **`cdynamics`** command on your environment’s `PATH`.
-
-### conda (optional)
-
-If you use `environment.yaml` from the repository root:
+**2. Activate it:**
 
 ```bash
-conda env create -f environment.yaml
-conda activate celludynamics-gui
+conda activate cdynamics
 ```
+
+**3. Install from PyPI:**
+
+```bash
+pip install cellularization-dynamics
+```
+
+That installs the `**cellularization_dynamics**` package and registers the `**cdynamics**` command on this environment’s `PATH`. Continue to **Start** below.
 
 ## Start
 
@@ -51,30 +51,7 @@ After a pip install, from any working directory (with the same environment activ
 cdynamics
 ```
 
-From a source checkout, after `pip install -e .` (so the package is importable), or from any directory once the package is installed:
-
-```bash
-python -m cellularization_dynamics
-```
-
-or:
-
-```bash
-python -m cellularization_dynamics.app
-```
-
-Imports use the **`cellularization_dynamics`** top-level name, so they do not collide with unrelated PyPI packages named `app` or `core`.
-
-## Layout
-
-- **`cellularization_dynamics/app/`** — PyQt6 application.
-- **`cellularization_dynamics/core/`** — shared image/geometry code (kymograph, straightening, spline, exports).
-
-## Config and state
-
-Each sample work directory has a single **`config.yaml`** with `schema_version: 2`. It holds acquisition settings (`acquisition.source_movie` points at the original TIFF; no duplicate trimmed stack), kymograph timing, spline options, apical alignment, straightening metadata, spline-fit metadata, and derived summaries. Legacy layouts with separate `track/*.yaml` files are merged into this file on first load.
-
-## GUI workflow
+## How to use?
 
 1. Add one or more `.tif` movies (drag-and-drop or **Open Files**).
 2. Select a movie from the list.

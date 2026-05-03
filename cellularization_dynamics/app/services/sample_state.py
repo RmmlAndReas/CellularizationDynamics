@@ -7,8 +7,15 @@ import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from .geometry_transform import straight_from_raw, um_from_straight
-from .pipeline_adapter import compute_apical_column_positions
+from .pipeline_adapter import (
+    apical_px_from_manual_polyline,
+    compute_apical_column_positions,
+)
 from .straighten_fast import straighten
+
+APICAL_MODE_ISLAND = "island"
+APICAL_MODE_MANUAL = "manual"
+DEFAULT_MANUAL_SIGMA_UM = 0.5
 
 
 @dataclass
@@ -35,9 +42,12 @@ class SampleState(QObject):
         self.ref_row: int = 0
         self.shifts: np.ndarray | None = None
         self.straight_kymo: np.ndarray | None = None
+        self.apical_px_by_col: np.ndarray | None = None
         self.front_points_raw: list[tuple[float, float]] = []
-        self.use_island_mode: bool = True
+        self.apical_mode: str = APICAL_MODE_ISLAND
         self.selected_island_labels: set[int] = set()
+        self.manual_polyline_raw: list[tuple[float, float]] = []
+        self.manual_sigma_um: float = DEFAULT_MANUAL_SIGMA_UM
         self.dirty: bool = False
 
     def set_kymograph(self, kymo: np.ndarray) -> None:
@@ -53,35 +63,105 @@ class SampleState(QObject):
         self.labels = None
         self.shifts = None
         self.straight_kymo = None
+        self.apical_px_by_col = None
 
     def init_threshold_from_percentile_and_recompute(self) -> None:
         if self.kymograph is None:
             return
         self.threshold = float(np.percentile(self.kymograph, 50))
-        self.recompute_from_threshold()
+        self.recompute_apical()
 
     def apply_apical_from_saved(
         self,
+        *,
+        mode: str,
         threshold: float,
-        use_island: bool,
-        island_labels: list[int],
+        island_labels: list[int] | None = None,
+        manual_polyline_raw: list[tuple[float, float]] | None = None,
+        manual_sigma_um: float | None = None,
     ) -> None:
-        """Restore threshold + island mode without clearing labels (unlike set_threshold)."""
-        self.use_island_mode = bool(use_island)
-        self.selected_island_labels = {int(x) for x in island_labels} if use_island else set()
+        """Restore mode-specific apical inputs without clearing the other mode's state."""
+        self.apical_mode = mode if mode in (APICAL_MODE_ISLAND, APICAL_MODE_MANUAL) else APICAL_MODE_ISLAND
         self.threshold = float(threshold)
-        self.recompute_from_threshold()
+        if island_labels is not None:
+            self.selected_island_labels = {int(x) for x in island_labels}
+        if manual_polyline_raw is not None:
+            self.manual_polyline_raw = [
+                (float(x), float(y)) for x, y in manual_polyline_raw
+            ]
+        if manual_sigma_um is not None:
+            self.manual_sigma_um = float(manual_sigma_um)
+        self.recompute_apical()
+
+    def set_apical_mode(self, mode: str) -> None:
+        if mode not in (APICAL_MODE_ISLAND, APICAL_MODE_MANUAL):
+            raise ValueError(f"Unknown apical mode: {mode!r}")
+        if mode == self.apical_mode:
+            return
+        self.apical_mode = mode
+        self.recompute_apical()
+
+    def set_manual_sigma_um(self, sigma_um: float) -> None:
+        new_sigma = max(0.0, float(sigma_um))
+        if abs(new_sigma - float(self.manual_sigma_um)) < 1e-12:
+            return
+        self.manual_sigma_um = new_sigma
+        if self.apical_mode == APICAL_MODE_MANUAL:
+            self.recompute_apical()
 
     def set_threshold(self, threshold: float) -> None:
         self.threshold = float(threshold)
         self.selected_island_labels.clear()
-        self.recompute_from_threshold()
+        if self.apical_mode == APICAL_MODE_ISLAND:
+            self.recompute_apical()
 
-    def set_use_island_mode(self, use_island_mode: bool) -> None:
-        self.use_island_mode = bool(use_island_mode)
-        if not self.use_island_mode:
-            self.selected_island_labels.clear()
-        self.recompute_from_threshold()
+    def add_manual_point_raw(self, x: float, y: float) -> None:
+        self.manual_polyline_raw.append((float(x), float(y)))
+        if self.apical_mode == APICAL_MODE_MANUAL:
+            self.recompute_apical()
+        else:
+            self.dirty = True
+            self.state_changed.emit()
+
+    def update_manual_point_raw(
+        self,
+        index: int,
+        x: float,
+        y: float,
+        *,
+        emit_state_changed: bool = True,
+    ) -> None:
+        if index < 0 or index >= len(self.manual_polyline_raw):
+            return
+        self.manual_polyline_raw[index] = (float(x), float(y))
+        if emit_state_changed:
+            if self.apical_mode == APICAL_MODE_MANUAL:
+                self.recompute_apical()
+            else:
+                self.dirty = True
+                self.state_changed.emit()
+        else:
+            self.dirty = True
+
+    def undo_manual_point(self) -> None:
+        if not self.manual_polyline_raw:
+            return
+        self.manual_polyline_raw.pop()
+        if self.apical_mode == APICAL_MODE_MANUAL:
+            self.recompute_apical()
+        else:
+            self.dirty = True
+            self.state_changed.emit()
+
+    def clear_manual_points(self) -> None:
+        if not self.manual_polyline_raw:
+            return
+        self.manual_polyline_raw = []
+        if self.apical_mode == APICAL_MODE_MANUAL:
+            self.recompute_apical()
+        else:
+            self.dirty = True
+            self.state_changed.emit()
 
     def select_island_at(self, x: float, y: float) -> bool:
         if self.labels is None:
@@ -92,10 +172,10 @@ class SampleState(QObject):
         if picked_label <= 0:
             if self.selected_island_labels:
                 self.selected_island_labels.clear()
-                self.recompute_from_threshold()
+                self.recompute_apical()
             return False
         self.selected_island_labels.add(picked_label)
-        self.recompute_from_threshold()
+        self.recompute_apical()
         return True
 
     def selected_island_mask(self) -> np.ndarray | None:
@@ -103,32 +183,54 @@ class SampleState(QObject):
             return None
         return np.isin(self.labels, list(self.selected_island_labels))
 
-    def recompute_from_threshold(self) -> None:
-        if self.kymograph is None or self.threshold is None:
+    def manual_polyline_time_depth(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Manual polyline as (time_min, depth_px_raw) arrays, or None when unusable."""
+        if self.kymograph is None or len(self.manual_polyline_raw) == 0:
+            return None
+        dt_min = max(float(self.acq_params.movie_time_interval_sec) / 60.0, 1e-12)
+        pts = np.asarray(self.manual_polyline_raw, dtype=float)
+        time_min = pts[:, 0] * dt_min
+        depth_px = pts[:, 1].copy()
+        return time_min, depth_px
+
+    def recompute_apical(self) -> None:
+        """Recompute mask/labels/apical_px/shifts/straight_kymo for the current mode."""
+        if self.kymograph is None:
             return
 
-        self.mask = self.kymograph <= self.threshold
-        depth, num_timepoints = self.mask.shape
+        depth, num_timepoints = self.kymograph.shape
 
-        if self.use_island_mode:
+        if self.apical_mode == APICAL_MODE_ISLAND:
+            if self.threshold is None:
+                return
+            self.mask = self.kymograph <= self.threshold
             apical_px, self.labels = compute_apical_column_positions(
                 self.mask,
-                mode="island",
                 island_labels=self.selected_island_labels,
-                min_run_length_px=5,
             )
         else:
-            apical_px, self.labels = compute_apical_column_positions(
-                self.mask,
-                mode="longest_run",
-                island_labels=None,
-                min_run_length_px=5,
-            )
+            self.mask = None
+            self.labels = None
+            td = self.manual_polyline_time_depth()
+            if td is None:
+                apical_px = np.full(num_timepoints, np.nan, dtype=float)
+            else:
+                time_min, depth_px = td
+                dt_min = max(float(self.acq_params.movie_time_interval_sec) / 60.0, 1e-12)
+                apical_px = apical_px_from_manual_polyline(
+                    time_min,
+                    depth_px,
+                    num_timepoints=num_timepoints,
+                    dt_min=dt_min,
+                    sigma_um=float(self.manual_sigma_um),
+                    px2micron=float(self.acq_params.px2micron),
+                )
 
+        self.apical_px_by_col = apical_px
         valid = ~np.isnan(apical_px)
         self.shifts = np.zeros(num_timepoints, dtype=int)
         if np.any(valid):
-            # Reserve ~2 µm headroom above apical.
+            # Shared geometry with alignment_from_apical_px (~2 µm headroom above apical).
             margin_px = int(round(2.0 / max(self.acq_params.px2micron, 1e-9)))
             self.ref_row = int(np.nanmin(apical_px[valid])) + max(0, margin_px)
             self.shifts[valid] = (self.ref_row - apical_px[valid]).astype(int)

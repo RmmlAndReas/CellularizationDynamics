@@ -10,7 +10,6 @@ dependencies:
   - tifffile
   - pillow
   - pyyaml
-  - imageio
   - imageio-ffmpeg
   - pip
   - pip:

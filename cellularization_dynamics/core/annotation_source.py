@@ -68,10 +68,11 @@ def build_apical_alignment_v2(
     threshold: float,
     kymograph_shape: tuple[int, int],
     movie_time_interval_sec: float,
+    manual_sigma_um: float | None = None,
 ) -> dict[str, Any]:
     """Scalar fields only; write polyline with ``persist_apical_alignment`` / ``write_apical_front_tsv``."""
     h, w = kymograph_shape
-    return {
+    doc: dict[str, Any] = {
         "version": 2,
         "mode": mode,
         "island_labels": island_labels,
@@ -80,6 +81,9 @@ def build_apical_alignment_v2(
         "kymograph_width_px": int(w),
         "movie_time_interval_sec": float(movie_time_interval_sec),
     }
+    if manual_sigma_um is not None:
+        doc["manual_sigma_um"] = float(manual_sigma_um)
+    return doc
 
 
 def persist_apical_alignment(
@@ -150,15 +154,19 @@ def session_front_time_depth(doc: dict[str, Any]) -> tuple[np.ndarray, np.ndarra
 
 def load_apical_session_v2_doc(track_folder: str) -> dict[str, Any] | None:
     """
-    Return the alignment document if it contains a restorable desktop session
-    (version >= 2, threshold, front line, valid island labels when mode is island).
+    Return the alignment document if it contains a restorable desktop session.
+
+    Accepts ``mode in {"island", "manual"}``:
+      - island: requires ``threshold`` and non-empty ``island_labels``.
+      - manual: requires ``track/apical_manual.tsv`` with at least two points.
+
+    Both modes require the v2 cellularization front (``front_points`` or the
+    externalized ``apical_front.tsv``).
     """
     doc = load_apical_alignment_doc(track_folder)
     if not doc:
         return None
     if int(doc.get("version", 1)) < 2:
-        return None
-    if "threshold" not in doc:
         return None
     fp = doc.get("front_points")
     if not fp:
@@ -169,14 +177,23 @@ def load_apical_session_v2_doc(track_folder: str) -> dict[str, Any] | None:
         return None
     if arr.shape[0] < 2:
         return None
-    mode = str(doc.get("mode", "longest_run")).strip()
-    if mode not in ("longest_run", "island"):
-        return None
+    mode = str(doc.get("mode", "island")).strip()
     if mode == "island":
+        if "threshold" not in doc:
+            return None
         raw_labels = doc.get("island_labels") or []
         if not raw_labels:
             return None
-    return doc
+        return doc
+    if mode == "manual":
+        from .track_tabular import read_apical_manual_tsv
+
+        wd = _work_dir_from_track(track_folder)
+        pts = read_apical_manual_tsv(wd)
+        if pts is None:
+            return None
+        return doc
+    return None
 
 
 def time_depth_to_raw_clicks(

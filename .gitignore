@@ -1,4 +1,11 @@
 .vscode/
 .cursor
-cellularization_dynamics/**/__pycache__/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
 cellularization_dynamics/app/.last_defaults.yaml
+
