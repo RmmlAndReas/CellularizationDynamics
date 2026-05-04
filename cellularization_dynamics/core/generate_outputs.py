@@ -813,9 +813,13 @@ def _write_delta_movie_mp4(
         pipeline_diag.info(__name__, "ffmpeg: BrokenPipeError while writing stdin (ffmpeg may have exited)")
     finally:
         try:
-            proc.stdin.close()
+            if proc.stdin is not None:
+                proc.stdin.close()
         except Exception:
             pass
+        # Popen.communicate() flushes stdin first; stdin is already closed here, which
+        # raises ValueError: flush of closed file on Python 3.11+ (macOS/Linux).
+        proc.stdin = None
     pipeline_diag.info(__name__, "ffmpeg: stdin closed, waiting on communicate()")
     _, err_b = proc.communicate()
     pipeline_diag.info(__name__, "ffmpeg: communicate() done returncode=%s", proc.returncode)
