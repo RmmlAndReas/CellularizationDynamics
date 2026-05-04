@@ -46,6 +46,8 @@ import cv2
 import numpy as np
 import tifffile
 
+from . import pipeline_diag
+
 
 def format_experiment_hms(total_seconds: int) -> str:
     """HH:MM:SS from elapsed experiment time in whole seconds (may exceed 24 h)."""
@@ -592,6 +594,12 @@ def mark_delta_on_trimmed_movie(
         if kymograph_brightness is not None
         else float(cfg.get("kymograph_brightness", 1.0))
     )
+    pipeline_diag.info(
+        __name__,
+        "mark_delta: movie shape T,Y,X=%s brightness_kb=%s",
+        (num_frames, height, width),
+        kb,
+    )
     out_gray = _autoscale_acquisition_movie_gray_u16(movie, kb)
 
     out = np.stack([out_gray, out_gray, out_gray], axis=-1)  # [T, Y, X, C]
@@ -661,10 +669,10 @@ def mark_delta_on_trimmed_movie(
             if np.isfinite(ap_y):
                 _draw_dashed_horizontal_u16(out[f], ap_y, apical_u16)
 
-        if (f + 1) % 50 == 0:
-            print(f"  Frame {f + 1}/{num_frames}")
+        pipeline_diag.overlay_frame_tick(__name__, f, num_frames)
 
     if show_timestamp:
+        pipeline_diag.info(__name__, "mark_delta: burning timestamps on %s frames", num_frames)
         mdt = float(movie_time_interval_sec)
         tsz = int(np.clip(int(timestamp_size_px), 2, 96))
         tr, tg, tb = (int(timestamp_rgb[0]), int(timestamp_rgb[1]), int(timestamp_rgb[2]))
@@ -680,6 +688,7 @@ def mark_delta_on_trimmed_movie(
 
     mp4_path = output_mp4_path or os.path.join(work_dir, "results", FRONT_MARKERS_MP4)
     os.makedirs(os.path.dirname(mp4_path), exist_ok=True)
+    pipeline_diag.info(__name__, "mark_delta: overlay done; encoding MP4 -> %s", mp4_path)
     _write_delta_movie_mp4(out, mp4_path, mp4_fps, mp4_crf)
 
 
@@ -777,6 +786,16 @@ def _write_delta_movie_mp4(
         "+faststart",
         out_abs,
     ]
+    pipeline_diag.info(
+        __name__,
+        "ffmpeg: %s frames %sx%s fps=%s crf=%s -> %s",
+        t,
+        width,
+        height,
+        eff_fps,
+        eff_crf,
+        out_abs,
+    )
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
@@ -785,21 +804,25 @@ def _write_delta_movie_mp4(
     )
     if proc.stdin is None:
         raise RuntimeError("ffmpeg subprocess did not provide stdin")
+    pipeline_diag.info(__name__, "ffmpeg: subprocess started, writing %s raw frames to stdin", t)
     try:
         for i in range(t):
+            pipeline_diag.debug(__name__, "ffmpeg stdin frame %s/%s", i + 1, t)
             proc.stdin.write(np.ascontiguousarray(u8[i]).tobytes())
     except BrokenPipeError:
-        pass
+        pipeline_diag.info(__name__, "ffmpeg: BrokenPipeError while writing stdin (ffmpeg may have exited)")
     finally:
         try:
             proc.stdin.close()
         except Exception:
             pass
+    pipeline_diag.info(__name__, "ffmpeg: stdin closed, waiting on communicate()")
     _, err_b = proc.communicate()
+    pipeline_diag.info(__name__, "ffmpeg: communicate() done returncode=%s", proc.returncode)
     if proc.returncode != 0:
         msg = (err_b or b"").decode(errors="replace").strip() or "ffmpeg exited with error"
         raise RuntimeError(msg)
-    print(f"Saved {FRONT_MARKERS_MP4} to: {mp4_path}")
+    pipeline_diag.user_line(__name__, f"Saved {FRONT_MARKERS_MP4} to: {mp4_path}")
 
 
 def _prepare_cellularization_data(folder, cfg, spline_time_min, spline_front_px):
@@ -988,6 +1011,7 @@ def _draw_cellularization_on_ax(ax, d):
 
 def make_cellularization_figure(work_dir, cfg, spline_time_min, spline_front_px):
     """Create Cellularization.png and .pdf (standalone square figure)."""
+    pipeline_diag.info(__name__, "make_cellularization_figure: prepare data + build axes")
     d = _prepare_cellularization_data(work_dir, cfg, spline_time_min, spline_front_px)
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.set_position([0.12, 0.12, 0.76, 0.76])
@@ -996,11 +1020,17 @@ def make_cellularization_figure(work_dir, cfg, spline_time_min, spline_front_px)
     ax.set_position([0.12, 0.12, 0.76, 0.76])
     out_png = os.path.join(work_dir, "results", "Cellularization.png")
     out_pdf = os.path.join(work_dir, "results", "Cellularization.pdf")
+    pipeline_diag.info(__name__, "figure: savefig PNG -> %s", out_png)
     plt.savefig(out_png, dpi=150, bbox_inches="tight", pad_inches=0.05)
+    pipeline_diag.info(__name__, "figure: PNG savefig returned")
+    pipeline_diag.info(__name__, "figure: savefig PDF -> %s", out_pdf)
     plt.savefig(out_pdf, dpi=150, bbox_inches="tight", pad_inches=0.05, format="pdf")
+    pipeline_diag.info(__name__, "figure: PDF savefig returned")
+    pipeline_diag.info(__name__, "figure: calling plt.close()")
     plt.close()
-    print(f"Saved Cellularization.png to: {out_png}")
-    print(f"Saved Cellularization.pdf to: {out_pdf}")
+    pipeline_diag.info(__name__, "figure: plt.close() returned")
+    pipeline_diag.user_line(__name__, f"Saved Cellularization.png to: {out_png}")
+    pipeline_diag.user_line(__name__, f"Saved Cellularization.pdf to: {out_pdf}")
     return d
 
 
@@ -1013,6 +1043,13 @@ def generate_outputs(work_dir, movie=None):
         read from disk inside ``mark_delta_on_trimmed_movie``, avoiding a
         redundant I/O round-trip when the caller already holds the array.
     """
+    pipeline_diag.configure()
+    pipeline_diag.info(
+        __name__,
+        "generate_outputs start work_dir=%s movie_preloaded=%s",
+        work_dir,
+        movie is not None,
+    )
     cfg = load_config(work_dir)
     time_min_spline, front_px = load_spline(work_dir)
 
@@ -1030,8 +1067,14 @@ def generate_outputs(work_dir, movie=None):
             "still be generated but crop range may be suboptimal."
         )
 
+    pipeline_diag.info(__name__, "generate_outputs step: mark_delta_on_trimmed_movie")
     mark_delta_on_trimmed_movie(work_dir, cfg, time_min_spline, front_px, movie=movie)
+    pipeline_diag.info(__name__, "generate_outputs step: mark_delta_on_trimmed_movie done")
+
+    pipeline_diag.info(__name__, "generate_outputs step: make_cellularization_figure")
     make_cellularization_figure(work_dir, cfg, time_min_spline, front_px)
+    pipeline_diag.info(__name__, "generate_outputs step: make_cellularization_figure done")
+    pipeline_diag.info(__name__, "generate_outputs finished OK")
 
 
 def main():
@@ -1049,6 +1092,7 @@ def main():
     args = parser.parse_args()
     if not os.path.isdir(args.work_dir):
         raise ValueError(f"Work directory does not exist: {args.work_dir}")
+    pipeline_diag.configure()
     generate_outputs(args.work_dir)
 
 

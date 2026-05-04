@@ -1,4 +1,3 @@
-1. When I click save the status pare should say "Saving.."
-4. Remove cytoplasm/yolk mask parts completely from the pipeline scripts (cellu_threshold.py thresholding UI, YolkMask, basal border, cytoplasm height). The front annotation alone is the product.
 5. In the apical line panel. It would be nice to have an option to temporarly disable the line with a tickbox. This would be great to confirm the location of the line.
-6. Zooming function in manual apical detection mode in the left panel
+6. Zooming function in manual apical detection mode in the left panel - not yet
+7. Scale bar option for the movie. Bottom right corner. Size, thickness and color option.

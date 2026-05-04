@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,7 @@ from .pipeline_adapter import (
 )
 from .output_layout import ensure_work_tree
 
+from cellularization_dynamics.core import pipeline_diag
 from cellularization_dynamics.core.annotation_source import load_apical_session_v2_doc
 from cellularization_dynamics.core.work_state import (
     get_movie_path,
@@ -134,6 +136,7 @@ class GenerateFigureWorker(QThread):
 
     def run(self):
         try:
+            pipeline_diag.configure()
             self.progress.emit("Straightening kymograph...")
             straighten_kymograph_run(str(self.work_dir))
             self.progress.emit("Fitting spline...")
@@ -148,4 +151,5 @@ class GenerateFigureWorker(QThread):
             generate_outputs(str(self.work_dir), movie=movie)
             self.done.emit()
         except Exception as exc:  # pragma: no cover
+            logging.exception("GenerateFigureWorker failed")
             self.failed.emit(str(exc))
