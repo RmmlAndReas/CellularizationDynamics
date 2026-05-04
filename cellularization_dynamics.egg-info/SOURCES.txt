@@ -43,6 +43,7 @@ cellularization_dynamics/core/export_geometry_timeseries.py
 cellularization_dynamics/core/fit_cellu_front_spline.py
 cellularization_dynamics/core/generate_outputs.py
 cellularization_dynamics/core/mask_utils.py
+cellularization_dynamics/core/pipeline_diag.py
 cellularization_dynamics/core/straighten_kymograph.py
 cellularization_dynamics/core/track_tabular.py
 cellularization_dynamics/core/trim_movie.py

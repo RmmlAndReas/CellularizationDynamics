@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: cellularization-dynamics
-Version: 0.2.3
+Version: 0.2.4
 Summary: Desktop GUI for cellularization annotation and output generation
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
